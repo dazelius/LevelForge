@@ -1944,9 +1944,69 @@ class LevelForge {
         }
 
         ctx.restore();
+        
+        // AI 미리보기 오버레이 (항상 최상단에 그리기)
+        if (this.aiPendingObjects && this.aiPendingObjects.length > 0) {
+            this.renderAIPreviewOverlay();
+        }
 
         // Update object count
         document.getElementById('objectCount').textContent = this.objects.length;
+    }
+    
+    renderAIPreviewOverlay() {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.translate(this.camera.x, this.camera.y);
+        ctx.scale(this.camera.zoom, this.camera.zoom);
+        
+        this.aiPendingObjects.forEach((obj, idx) => {
+            if (obj.type === 'polyfloor' && obj.points && obj.points.length >= 3) {
+                const isSelected = this.aiSelectedIndices?.has(idx);
+                
+                ctx.beginPath();
+                ctx.moveTo(obj.points[0].x, obj.points[0].y);
+                obj.points.forEach(p => ctx.lineTo(p.x, p.y));
+                ctx.closePath();
+                
+                ctx.fillStyle = isSelected ? 'rgba(78, 205, 196, 0.4)' : 'rgba(162, 155, 254, 0.3)';
+                ctx.fill();
+                
+                ctx.strokeStyle = isSelected ? '#4ecdc4' : '#a29bfe';
+                ctx.lineWidth = isSelected ? 4 : 2;
+                ctx.setLineDash([8, 4]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // 레이블
+                const cx = obj.points.reduce((s, p) => s + p.x, 0) / obj.points.length;
+                const cy = obj.points.reduce((s, p) => s + p.y, 0) / obj.points.length;
+                ctx.font = 'bold 14px sans-serif';
+                ctx.fillStyle = isSelected ? '#4ecdc4' : '#a29bfe';
+                ctx.textAlign = 'center';
+                const checkbox = isSelected ? '☑' : '☐';
+                ctx.fillText(`${checkbox} ${idx + 1}. ${obj.label || 'floor'}`, cx, cy);
+            }
+        });
+        
+        // AI 영역 지정 모드
+        if (this.aiAreaSelection) {
+            const { startX, startY, endX, endY } = this.aiAreaSelection;
+            const x = Math.min(startX, endX);
+            const y = Math.min(startY, endY);
+            const w = Math.abs(endX - startX);
+            const h = Math.abs(endY - startY);
+            
+            ctx.fillStyle = 'rgba(255, 193, 7, 0.2)';
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = '#ffc107';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 3]);
+            ctx.strokeRect(x, y, w, h);
+            ctx.setLineDash([]);
+        }
+        
+        ctx.restore();
     }
     
     // 경로 거리 계산 (픽셀 → 미터)
@@ -7914,71 +7974,8 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     }
     
     showAIPreview() {
-        // AI 생성 오브젝트를 임시로 표시
-        if (!this.aiPendingObjects) return;
+        // render()를 호출하면 renderAIPreviewOverlay()가 자동으로 그려짐
         this.render();
-        
-        // 미리보기 오버레이 그리기
-        const ctx = this.ctx;
-        ctx.save();
-        ctx.translate(this.camera.x, this.camera.y);
-        ctx.scale(this.camera.zoom, this.camera.zoom);
-        
-        this.aiPendingObjects.forEach((obj, idx) => {
-            if (obj.type === 'polyfloor' && obj.points) {
-                const isSelected = this.aiSelectedIndices?.has(idx);
-                
-                // 미리보기 스타일 (점선)
-                ctx.beginPath();
-                ctx.moveTo(obj.points[0].x, obj.points[0].y);
-                obj.points.forEach(p => ctx.lineTo(p.x, p.y));
-                ctx.closePath();
-                
-                // 선택된 것은 더 밝게
-                ctx.fillStyle = isSelected ? 'rgba(78, 205, 196, 0.4)' : 'rgba(162, 155, 254, 0.25)';
-                ctx.fill();
-                
-                ctx.strokeStyle = isSelected ? '#4ecdc4' : '#a29bfe';
-                ctx.lineWidth = isSelected ? 4 : 2;
-                ctx.setLineDash([8, 4]);
-                ctx.stroke();
-                ctx.setLineDash([]);
-                
-                // 레이블 + 인덱스
-                const cx = obj.points.reduce((s, p) => s + p.x, 0) / obj.points.length;
-                const cy = obj.points.reduce((s, p) => s + p.y, 0) / obj.points.length;
-                ctx.font = 'bold 14px sans-serif';
-                ctx.fillStyle = isSelected ? '#4ecdc4' : '#a29bfe';
-                ctx.textAlign = 'center';
-                
-                const checkbox = isSelected ? '☑' : '☐';
-                ctx.fillText(`${checkbox} ${idx + 1}. ${obj.label || 'floor'}`, cx, cy);
-            }
-        });
-        
-        // AI 영역 지정 모드 표시
-        if (this.aiAreaSelection) {
-            const { startX, startY, endX, endY } = this.aiAreaSelection;
-            const x = Math.min(startX, endX);
-            const y = Math.min(startY, endY);
-            const w = Math.abs(endX - startX);
-            const h = Math.abs(endY - startY);
-            
-            ctx.fillStyle = 'rgba(255, 193, 7, 0.2)';
-            ctx.fillRect(x, y, w, h);
-            ctx.strokeStyle = '#ffc107';
-            ctx.lineWidth = 2;
-            ctx.setLineDash([6, 3]);
-            ctx.strokeRect(x, y, w, h);
-            ctx.setLineDash([]);
-            
-            ctx.font = 'bold 12px sans-serif';
-            ctx.fillStyle = '#ffc107';
-            ctx.textAlign = 'center';
-            ctx.fillText('🤖 AI 작업 영역', x + w/2, y + h/2);
-        }
-        
-        ctx.restore();
     }
     
     // AI 미리보기에서 오브젝트 클릭 토글
