@@ -7697,61 +7697,128 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     }
     
     async aiAutoGenerate(mode) {
-        const prompts = {
-            connect: `현재 레벨을 분석해서 분리된 바닥들을 연결하는 통로를 만들어줘.
-- 기존 바닥의 가장자리 점과 정확히 맞닿도록 좌표 계산
-- 통로 폭은 4~6m (128~192px)
-- 높이차가 있으면 경사로나 계단 영역 포함
-- 최소한의 오브젝트로 효율적으로 연결`,
-            
-            expand: `현재 레벨의 빈 공간에 교전 영역을 확장해줘.
-- 기존 바닥과 연결되는 새 바닥 생성
-- 다양한 루트가 생기도록 배치
-- 3초 룰 고려 (15m마다 방향 전환)
-- 초크포인트 형성 고려`,
-            
-            flank: `Offence에서 Objective로 가는 새로운 우회 경로를 만들어줘.
-- 기존 메인 루트와 다른 방향
-- 측면 공격이 가능한 경로
-- 기존 바닥과 연결`
+        // 3단계 반복 정제 프로세스
+        const stages = {
+            connect: [
+                { name: '1/3 구조 분석', prompt: `레벨을 분석하고 연결이 필요한 바닥들 사이에 기본 통로를 생성해줘. 폭 128~192px, 기존 점과 연결.` },
+                { name: '2/3 연결부 정교화', prompt: `이전 결과를 바탕으로 연결부가 정확히 맞닿도록 좌표를 조정하고, 빠진 연결이 있으면 추가해줘.` },
+                { name: '3/3 최종 검증', prompt: `모든 통로가 기존 바닥과 정확히 연결되는지 확인하고, 이동 가능한 완전한 네트워크가 되도록 마무리해줘.` }
+            ],
+            expand: [
+                { name: '1/3 영역 탐색', prompt: `레벨의 빈 공간을 분석하고 확장 가능한 영역에 새 바닥을 생성해줘.` },
+                { name: '2/3 루트 다양화', prompt: `이전 결과를 기반으로 다양한 이동 루트가 생기도록 추가 바닥을 배치해줘. 3초 룰(15m) 고려.` },
+                { name: '3/3 연결 완성', prompt: `모든 새 바닥이 기존 바닥과 연결되도록 통로를 추가해줘.` }
+            ],
+            flank: [
+                { name: '1/2 우회로 설계', prompt: `Offence에서 Objective로 가는 새로운 측면 경로를 설계해줘.` },
+                { name: '2/2 연결 및 완성', prompt: `우회 경로가 기존 바닥과 완전히 연결되도록 마무리해줘.` }
+            ]
         };
         
-        const prompt = prompts[mode];
-        if (!prompt) return;
+        const modeStages = stages[mode];
+        if (!modeStages) return;
         
-        this.updateAIStatus('🤖 분석 중...', 'loading');
+        this.aiIterationResults = [];  // 각 단계 결과 저장
+        
+        for (let i = 0; i < modeStages.length; i++) {
+            const stage = modeStages[i];
+            this.updateAIStatus(`🤖 ${stage.name}...`, 'loading');
+            
+            // 이전 단계 결과를 포함한 컨텍스트
+            const contextPrompt = i > 0 && this.aiIterationResults.length > 0
+                ? `이전 단계에서 생성된 오브젝트들:\n${JSON.stringify(this.aiIterationResults)}\n\n${stage.prompt}`
+                : stage.prompt;
+            
+            try {
+                const response = await fetch('http://localhost:3001/ai/chat', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        prompt: contextPrompt,
+                        levelData: {
+                            levelName: this.levelName,
+                            objects: [...this.objects, ...this.aiIterationResults],
+                            gridSize: this.gridSize
+                        }
+                    })
+                });
+                
+                if (!response.ok) throw new Error('AI 서버 오류');
+                
+                const data = await response.json();
+                const parsed = this.parseAIResponseRaw(data.response);
+                
+                if (parsed && parsed.objects && parsed.objects.length > 0) {
+                    // 이번 단계 결과를 누적
+                    const newObjs = parsed.objects.map(obj => ({
+                        ...obj,
+                        id: this.nextId++,
+                        floor: obj.floor ?? this.currentFloor,
+                        category: obj.category || 'floors',
+                        color: obj.color || 'hsla(280, 60%, 50%, 0.6)',
+                        closed: obj.closed ?? true,
+                        floorHeight: obj.floorHeight ?? 0
+                    }));
+                    this.aiIterationResults.push(...newObjs);
+                    
+                    // 미리보기 업데이트
+                    this.aiPendingObjects = [...this.aiIterationResults];
+                    this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, idx) => idx));
+                    this.render();
+                    
+                    this.updateAIStatus(`✅ ${stage.name} 완료 (${this.aiIterationResults.length}개)`, 'success');
+                    await this.sleep(500);  // 단계 사이 딜레이
+                }
+                
+            } catch (err) {
+                console.error(`AI ${stage.name} 오류:`, err);
+                this.updateAIStatus(`⚠️ ${stage.name} 실패, 계속...`, 'warning');
+                await this.sleep(300);
+            }
+        }
+        
+        // 최종 결과
+        if (this.aiIterationResults.length > 0) {
+            this.aiPendingObjects = this.aiIterationResults;
+            this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, i) => i));
+            this.addAIActionButtons(`${this.aiIterationResults.length}개 오브젝트 생성됨`);
+            this.updateAIStatus(`🎉 전체 완료 - ${this.aiIterationResults.length}개 생성`, 'success');
+        } else {
+            this.updateAIStatus('❌ 생성 실패 - 다시 시도해주세요', 'error');
+        }
+    }
+    
+    sleep(ms) {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+    
+    // JSON만 파싱 (UI 없이)
+    parseAIResponseRaw(response) {
+        let cleaned = response.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
         
         try {
-            const response = await fetch('http://localhost:3001/ai/chat', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    prompt,
-                    levelData: {
-                        levelName: this.levelName,
-                        objects: this.objects,
-                        gridSize: this.gridSize
-                    }
-                })
-            });
-            
-            if (!response.ok) {
-                throw new Error('AI 서버 오류');
+            return JSON.parse(cleaned);
+        } catch (e) {}
+        
+        // { } 추출
+        let depth = 0, start = -1, end = -1;
+        for (let i = 0; i < cleaned.length; i++) {
+            if (cleaned[i] === '{') {
+                if (depth === 0) start = i;
+                depth++;
+            } else if (cleaned[i] === '}') {
+                depth--;
+                if (depth === 0 && start >= 0) {
+                    end = i + 1;
+                    try {
+                        return JSON.parse(cleaned.substring(start, end));
+                    } catch (e) {}
+                    start = -1;
+                }
             }
-            
-            const data = await response.json();
-            const success = this.parseAIResponse(data.response);
-            
-            if (success) {
-                this.updateAIStatus('✅ 생성 완료 - 캔버스에서 확인 후 적용/취소', 'success');
-            } else {
-                this.updateAIStatus('⚠️ 재시도 중...', 'warning');
-            }
-            
-        } catch (err) {
-            this.updateAIStatus('❌ AI 서버 연결 실패 (node ai-server.js 실행 필요)', 'error');
-            console.error('AI 오류:', err);
         }
+        
+        return null;
     }
     
     async sendAIMessage() {
