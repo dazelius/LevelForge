@@ -145,22 +145,31 @@
                     <span><i class="fa-solid fa-robot"></i> AI Level Designer</span>
                     <button id="aiCloseBtn" class="ai-close-btn"><i class="fa-solid fa-times"></i></button>
                 </div>
-                <div id="aiMessages" class="ai-messages"></div>
-                <div class="ai-input-area">
-                    <div class="ai-quick-actions">
-                        <button class="ai-quick-btn" data-prompt="기존 바닥들 사이의 빈 공간을 연결하는 통로를 만들어줘. 기존 점들과 정확히 맞닿도록 좌표를 계산해서 polyfloor를 생성해줘.">🔗 통로 연결</button>
-                        <button class="ai-quick-btn" data-prompt="Defence에서 Objective로 가는 새로운 우회 경로를 만들어줘. 기존 바닥과 연결되는 polyfloor를 생성해줘.">🛤️ 우회로</button>
-                        <button class="ai-quick-btn ai-area-btn" onclick="app.startAIAreaSelection()">📐 영역 지정</button>
-                    </div>
-                    <div class="ai-quick-actions" style="margin-top:4px;">
-                        <button class="ai-quick-btn" data-prompt="현재 맵의 빈 공간에 추가 바닥을 생성해서 더 넓은 교전 지역을 만들어줘.">🏗️ 영역 확장</button>
-                        <button class="ai-quick-btn" data-prompt="현재 레벨을 분석하고 개선점을 알려줘">📊 분석</button>
-                    </div>
+                <!-- AI 자동 생성 버튼 -->
+                <div class="ai-auto-section">
+                    <button class="ai-auto-btn" onclick="app.aiAutoGenerate('connect')">
+                        <i class="fa-solid fa-link"></i> 통로 자동 연결
+                    </button>
+                    <button class="ai-auto-btn" onclick="app.aiAutoGenerate('expand')">
+                        <i class="fa-solid fa-expand"></i> 영역 확장
+                    </button>
+                    <button class="ai-auto-btn ai-area-btn" onclick="app.startAIAreaSelection()">
+                        <i class="fa-solid fa-vector-square"></i> 영역 지정 생성
+                    </button>
+                </div>
+                
+                <div class="ai-status-bar" id="aiStatusBar" style="display:none;">
+                    <span id="aiStatusText">대기 중...</span>
+                </div>
+                
+                <div id="aiMessages" class="ai-messages" style="display:none;"></div>
+                <div class="ai-input-area" style="display:none;">
                     <div class="ai-input-row">
-                        <input type="text" id="aiInput" placeholder="레벨 디자인에 대해 질문하세요..." />
+                        <input type="text" id="aiInput" placeholder="직접 요청..." />
                         <button id="aiSendBtn"><i class="fa-solid fa-paper-plane"></i></button>
                     </div>
                 </div>
+                <button class="ai-toggle-chat" onclick="app.toggleAIChat()">💬 채팅 모드</button>
             </div>
 
             <!-- 캔버스 영역 -->

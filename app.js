@@ -7612,6 +7612,88 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         }
     }
     
+    toggleAIChat() {
+        const messages = document.getElementById('aiMessages');
+        const inputArea = document.querySelector('.ai-input-area');
+        const isHidden = messages?.style.display === 'none';
+        
+        if (messages) messages.style.display = isHidden ? 'flex' : 'none';
+        if (inputArea) inputArea.style.display = isHidden ? 'flex' : 'none';
+    }
+    
+    updateAIStatus(text, type = 'info') {
+        const bar = document.getElementById('aiStatusBar');
+        const textEl = document.getElementById('aiStatusText');
+        if (bar && textEl) {
+            bar.style.display = 'flex';
+            textEl.textContent = text;
+            bar.className = `ai-status-bar ai-status-${type}`;
+        }
+    }
+    
+    hideAIStatus() {
+        const bar = document.getElementById('aiStatusBar');
+        if (bar) bar.style.display = 'none';
+    }
+    
+    async aiAutoGenerate(mode) {
+        const prompts = {
+            connect: `현재 레벨을 분석해서 분리된 바닥들을 연결하는 통로를 만들어줘.
+- 기존 바닥의 가장자리 점과 정확히 맞닿도록 좌표 계산
+- 통로 폭은 4~6m (128~192px)
+- 높이차가 있으면 경사로나 계단 영역 포함
+- 최소한의 오브젝트로 효율적으로 연결`,
+            
+            expand: `현재 레벨의 빈 공간에 교전 영역을 확장해줘.
+- 기존 바닥과 연결되는 새 바닥 생성
+- 다양한 루트가 생기도록 배치
+- 3초 룰 고려 (15m마다 방향 전환)
+- 초크포인트 형성 고려`,
+            
+            flank: `Offence에서 Objective로 가는 새로운 우회 경로를 만들어줘.
+- 기존 메인 루트와 다른 방향
+- 측면 공격이 가능한 경로
+- 기존 바닥과 연결`
+        };
+        
+        const prompt = prompts[mode];
+        if (!prompt) return;
+        
+        this.updateAIStatus('🤖 분석 중...', 'loading');
+        
+        try {
+            const response = await fetch('http://localhost:3001/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt,
+                    levelData: {
+                        levelName: this.levelName,
+                        objects: this.objects,
+                        gridSize: this.gridSize
+                    }
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error('AI 서버 오류');
+            }
+            
+            const data = await response.json();
+            const success = this.parseAIResponse(data.response);
+            
+            if (success) {
+                this.updateAIStatus('✅ 생성 완료 - 캔버스에서 확인 후 적용/취소', 'success');
+            } else {
+                this.updateAIStatus('⚠️ 재시도 중...', 'warning');
+            }
+            
+        } catch (err) {
+            this.updateAIStatus('❌ AI 서버 연결 실패 (node ai-server.js 실행 필요)', 'error');
+            console.error('AI 오류:', err);
+        }
+    }
+    
     async sendAIMessage() {
         const input = document.getElementById('aiInput');
         const messages = document.getElementById('aiMessages');
@@ -7625,6 +7707,8 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         // 사용자 메시지 추가
         this.addAIMessage(prompt, 'user');
         input.value = '';
+        
+        this.updateAIStatus('🤖 생각 중...', 'loading');
         
         // 로딩 메시지
         const loadingMsg = this.addAIMessage('생각 중...', 'loading');

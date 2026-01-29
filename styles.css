@@ -1559,6 +1559,96 @@ body {
     border: 1px solid #e74c3c;
 }
 
+/* AI 자동 생성 버튼 */
+.ai-auto-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    background: var(--bg-darker);
+    border-radius: 8px;
+    margin-bottom: 8px;
+}
+
+.ai-auto-btn {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: linear-gradient(135deg, #6c5ce7, #a29bfe);
+    border: none;
+    border-radius: 8px;
+    color: #fff;
+    font-size: 13px;
+    font-weight: bold;
+    cursor: pointer;
+    transition: all 0.2s;
+}
+
+.ai-auto-btn:hover {
+    background: linear-gradient(135deg, #5b4cdb, #8c7ae6);
+    transform: translateY(-1px);
+}
+
+.ai-auto-btn.ai-area-btn {
+    background: linear-gradient(135deg, #f39c12, #e67e22);
+}
+
+.ai-auto-btn.ai-area-btn:hover {
+    background: linear-gradient(135deg, #e67e22, #d35400);
+}
+
+.ai-auto-btn i {
+    font-size: 14px;
+}
+
+.ai-status-bar {
+    display: flex;
+    align-items: center;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-bottom: 8px;
+    background: var(--bg-lighter);
+}
+
+.ai-status-bar.ai-status-loading {
+    background: rgba(162, 155, 254, 0.2);
+    color: #a29bfe;
+}
+
+.ai-status-bar.ai-status-success {
+    background: rgba(78, 205, 196, 0.2);
+    color: #4ecdc4;
+}
+
+.ai-status-bar.ai-status-warning {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+}
+
+.ai-status-bar.ai-status-error {
+    background: rgba(231, 76, 60, 0.2);
+    color: #e74c3c;
+}
+
+.ai-toggle-chat {
+    width: 100%;
+    padding: 6px;
+    background: transparent;
+    border: 1px dashed var(--border);
+    border-radius: 6px;
+    color: var(--text-dim);
+    font-size: 11px;
+    cursor: pointer;
+    margin-top: 4px;
+}
+
+.ai-toggle-chat:hover {
+    background: var(--bg-lighter);
+    color: var(--text);
+}
+
 /* Recent Files Dropdown */
 .recent-dropdown {
     position: absolute;
