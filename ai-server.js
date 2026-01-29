@@ -66,16 +66,14 @@ function extractJSON(text) {
 
 // Claude API 호출
 async function callClaude(prompt, levelData) {
-    const systemPrompt = `You are a JSON generator for FPS level design. Output ONLY valid JSON, no text.
+    const systemPrompt = `OUTPUT FORMAT: Pure JSON only. No text before or after.
 
-FORMAT (output exactly this structure):
-{"objects":[{"type":"polyfloor","points":[{"x":0,"y":0,"z":0},{"x":128,"y":0,"z":0},{"x":128,"y":128,"z":0},{"x":0,"y":128,"z":0}],"floorHeight":0,"floor":0,"label":"name","closed":true}],"description":"what was created"}
+EXACT FORMAT:
+{"objects":[{"type":"polyfloor","points":[{"x":0,"y":0,"z":0},{"x":128,"y":0,"z":0},{"x":128,"y":128,"z":0},{"x":0,"y":128,"z":0}],"floorHeight":0,"floor":0,"label":"Corridor","closed":true}],"description":"Created corridors"}
 
-RULES:
-- 32px = 1m
-- Corridor width: 128-192px
-- Match existing vertex coordinates exactly
-- Output ONLY JSON, no explanation, no markdown`;
+COORDINATE SYSTEM: 32px = 1m, corridor width 128-192px
+
+CRITICAL: Start response with { and end with }. No Korean text. No markdown. No explanation.`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -90,7 +88,7 @@ RULES:
             system: systemPrompt,
             messages: [{
                 role: 'user',
-                content: `Level: ${JSON.stringify(levelData)}\n\nTask: ${prompt}\n\nRespond with ONLY the JSON object. No other text.`
+                content: `LEVEL DATA:\n${JSON.stringify(levelData)}\n\nTASK: ${prompt}\n\nRESPOND WITH JSON ONLY. START WITH { END WITH }`
             }]
         })
     });
