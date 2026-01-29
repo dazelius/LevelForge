@@ -8123,30 +8123,112 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
             this.aiAreaMode = false;
             document.body.style.cursor = '';
             this.render();
+            this.showToast('영역이 너무 작습니다 (최소 2m x 2m)');
             return;
-        }
-        
-        // AI에게 영역 정보와 함께 요청
-        const prompt = `다음 영역에 바닥/통로를 만들어줘:
-- 좌상단: (${Math.round(x1)}, ${Math.round(y1)})
-- 우하단: (${Math.round(x2)}, ${Math.round(y2)})
-- 크기: ${Math.round(w/32)}m x ${Math.round(h/32)}m
-
-기존 바닥들과 자연스럽게 연결되도록 해줘.`;
-        
-        const input = document.getElementById('aiInput');
-        if (input) {
-            input.value = prompt;
         }
         
         this.aiAreaMode = false;
         document.body.style.cursor = '';
         
-        // AI 패널 열기
-        const panel = document.getElementById('aiPanel');
-        if (panel) panel.style.display = 'flex';
+        // 영역 정보 저장 (렌더링용)
+        this.pendingAIArea = { x1, y1, x2, y2, w, h };
         
-        this.showToast('영역이 지정되었습니다. 메시지를 수정하거나 전송하세요.');
+        // 프롬프트 입력 모달 표시
+        this.showAIPromptModal(x1, y1, x2, y2, w, h);
+    }
+    
+    showAIPromptModal(x1, y1, x2, y2, w, h) {
+        // 기존 모달 제거
+        document.getElementById('aiPromptModal')?.remove();
+        
+        const defaultPrompt = `이 영역(${Math.round(w/32)}m x ${Math.round(h/32)}m)에 바닥을 만들어줘. 기존 바닥과 연결되도록.`;
+        
+        const modal = document.createElement('div');
+        modal.id = 'aiPromptModal';
+        modal.className = 'ai-prompt-modal';
+        modal.innerHTML = `
+            <div class="ai-prompt-content">
+                <div class="ai-prompt-header">
+                    📐 영역 지정 완료
+                    <span class="ai-prompt-size">${Math.round(w/32)}m × ${Math.round(h/32)}m</span>
+                </div>
+                <div class="ai-prompt-coords">
+                    좌표: (${Math.round(x1)}, ${Math.round(y1)}) ~ (${Math.round(x2)}, ${Math.round(y2)})
+                </div>
+                <textarea id="aiAreaPrompt" class="ai-prompt-textarea" rows="3">${defaultPrompt}</textarea>
+                <div class="ai-prompt-btns">
+                    <button class="ai-cancel-btn" onclick="app.cancelAIArea()">취소</button>
+                    <button class="ai-apply-btn" onclick="app.sendAIAreaRequest()">🤖 AI 생성</button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        document.getElementById('aiAreaPrompt')?.focus();
+        
+        this.render(); // 영역 표시 유지
+    }
+    
+    cancelAIArea() {
+        this.aiAreaSelection = null;
+        this.pendingAIArea = null;
+        document.getElementById('aiPromptModal')?.remove();
+        this.render();
+    }
+    
+    async sendAIAreaRequest() {
+        const textarea = document.getElementById('aiAreaPrompt');
+        const userPrompt = textarea?.value?.trim();
+        
+        if (!userPrompt) {
+            this.showToast('프롬프트를 입력해주세요');
+            return;
+        }
+        
+        const area = this.pendingAIArea;
+        if (!area) return;
+        
+        // 모달 닫기
+        document.getElementById('aiPromptModal')?.remove();
+        
+        // 영역 정보 포함한 프롬프트
+        const fullPrompt = `영역 좌표: (${Math.round(area.x1)}, ${Math.round(area.y1)}) ~ (${Math.round(area.x2)}, ${Math.round(area.y2)}), 크기 ${Math.round(area.w/32)}m x ${Math.round(area.h/32)}m
+
+사용자 요청: ${userPrompt}`;
+        
+        this.updateAIStatus('🤖 생성 중...', 'loading');
+        
+        try {
+            const response = await fetch('http://localhost:3001/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: fullPrompt,
+                    levelData: {
+                        levelName: this.levelName,
+                        objects: this.objects,
+                        gridSize: this.gridSize
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('AI 서버 오류');
+            
+            const data = await response.json();
+            const success = this.parseAIResponse(data.response);
+            
+            if (success) {
+                this.updateAIStatus('✅ 생성 완료', 'success');
+            }
+            
+        } catch (err) {
+            this.updateAIStatus('❌ AI 서버 연결 실패', 'error');
+            console.error('AI 오류:', err);
+        }
+        
+        // 영역 선택 초기화
+        this.aiAreaSelection = null;
+        this.pendingAIArea = null;
     }
 }
 

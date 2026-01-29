@@ -1702,6 +1702,86 @@ body {
     font-size: 13px;
 }
 
+/* AI 프롬프트 모달 */
+.ai-prompt-modal {
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    background: rgba(0,0,0,0.7);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 2000;
+}
+
+.ai-prompt-content {
+    background: var(--bg-dark);
+    border: 2px solid #f39c12;
+    border-radius: 12px;
+    padding: 20px;
+    width: 400px;
+    max-width: 90vw;
+}
+
+.ai-prompt-header {
+    font-size: 16px;
+    font-weight: bold;
+    color: #f39c12;
+    margin-bottom: 8px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.ai-prompt-size {
+    background: #f39c12;
+    color: #000;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+}
+
+.ai-prompt-coords {
+    font-size: 11px;
+    color: var(--text-dim);
+    margin-bottom: 12px;
+    font-family: monospace;
+}
+
+.ai-prompt-textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--bg);
+    color: var(--text);
+    font-size: 13px;
+    resize: vertical;
+    min-height: 80px;
+}
+
+.ai-prompt-textarea:focus {
+    outline: none;
+    border-color: #f39c12;
+}
+
+.ai-prompt-btns {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    margin-top: 12px;
+}
+
+.ai-prompt-btns .ai-apply-btn {
+    background: linear-gradient(135deg, #f39c12, #e67e22);
+}
+
+.ai-prompt-btns .ai-apply-btn:hover {
+    background: linear-gradient(135deg, #e67e22, #d35400);
+}
+
 /* Recent Files Dropdown */
 .recent-dropdown {
     position: absolute;
