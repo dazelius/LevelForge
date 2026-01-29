@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>LEVELFORGE - FPS Level Designer</title>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div id="app">
+        <!-- 상단 메뉴바 -->
+        <header class="menubar">
+            <div class="brand">
+                <span class="logo">◆</span>
+                <span class="title">LEVELFORGE</span>
+                <span class="level-name-divider">|</span>
+                <span id="levelNameDisplay" class="level-name" title="클릭하여 레벨 이름 변경">Untitled</span>
+            </div>
+            <nav class="menu">
+                <div class="menu-group">
+                    <button id="newBtn" class="menu-btn" title="새 프로젝트"><i class="fa-solid fa-file"></i></button>
+                    <button id="openBtn" class="menu-btn" title="열기 (Ctrl+O)"><i class="fa-solid fa-folder-open"></i></button>
+                    <button id="saveBtn" class="menu-btn" title="저장 (Ctrl+S)"><i class="fa-solid fa-floppy-disk"></i></button>
+                    <button id="exportBtn" class="menu-btn" title="이미지 내보내기"><i class="fa-solid fa-image"></i></button>
+                    <button id="exportBlenderBtn" class="menu-btn" title="Blender로 내보내기" style="color:#ea7600"><i class="fa-solid fa-cube"></i>B</button>
+                    <button id="view3dBtn" class="menu-btn" title="3D 뷰" style="color:#4ecdc4"><i class="fa-solid fa-cube"></i></button>
+                </div>
+                <div class="menu-divider"></div>
+                <div class="menu-group">
+                    <button id="undoBtn" class="menu-btn" title="실행취소 (Ctrl+Z)"><i class="fa-solid fa-rotate-left"></i></button>
+                    <button id="redoBtn" class="menu-btn" title="다시실행 (Ctrl+Y)"><i class="fa-solid fa-rotate-right"></i></button>
+                </div>
+                <div class="menu-divider"></div>
+                <div class="menu-group tools-group" style="position:relative;">
+                    <button class="menu-btn tool-btn active" data-tool="select" title="선택 도구 (V)&#10;오브젝트를 클릭하여 선택"><i class="fa-solid fa-arrow-pointer"></i></button>
+                    <button class="menu-btn tool-btn" data-tool="pan" title="이동 도구 (Space)&#10;캔버스를 드래그하여 이동"><i class="fa-solid fa-hand"></i></button>
+                    <button class="menu-btn tool-btn" data-tool="polygon" title="다각형 바닥 (P)&#10;클릭: 점 추가&#10;Enter/더블클릭: 완성" style="color:#4ecdc4;"><i class="fa-solid fa-draw-polygon"></i></button>
+                    <button class="menu-btn tool-btn" data-tool="spline" id="splineToolBtn" title="스플라인 바닥 (S)&#10;클릭: 경로점 추가&#10;Enter/더블클릭: 바닥 생성" style="color:#f39c12;"><i class="fa-solid fa-bezier-curve"></i></button>
+                    <!-- 스플라인 옵션 팝업 -->
+                    <div class="spline-popup" id="splineOptions" style="display:none;">
+                        <div class="spline-popup-title">통로 너비</div>
+                        <div class="spline-popup-controls">
+                            <button id="splineWidthMinus" class="spline-popup-btn">−</button>
+                            <span id="splineWidthLabel" class="spline-popup-value">5m</span>
+                            <button id="splineWidthPlus" class="spline-popup-btn">+</button>
+                        </div>
+                        <input type="range" id="splineWidth" min="32" max="320" value="160" step="32" class="spline-popup-slider">
+                    </div>
+                </div>
+                <div class="menu-divider"></div>
+                <div class="menu-group markers-group">
+                    <button class="menu-btn tool-btn" data-tool="spawn-def" title="Defence Spawn&#10;수비팀 시작 위치 (10×10m)" style="color:#27ae60;"><i class="fa-solid fa-shield-halved"></i></button>
+                    <button class="menu-btn tool-btn" data-tool="spawn-off" title="Offence Spawn&#10;공격팀 시작 위치 (10×10m)" style="color:#e74c3c;"><i class="fa-solid fa-crosshairs"></i></button>
+                    <button class="menu-btn tool-btn" data-tool="objective" title="Objective Point&#10;점령 목표 지점 (16×16m)" style="color:#f39c12;"><i class="fa-solid fa-flag"></i></button>
+                </div>
+                <div class="menu-divider"></div>
+                <div class="menu-group zoom-group">
+                    <button id="zoomOut" class="menu-btn" title="축소"><i class="fa-solid fa-minus"></i></button>
+                    <span id="zoomLevel" class="zoom-display">100%</span>
+                    <button id="zoomIn" class="menu-btn" title="확대"><i class="fa-solid fa-plus"></i></button>
+                    <button id="zoomFit" class="menu-btn" title="맞추기"><i class="fa-solid fa-expand"></i></button>
+                </div>
+            </nav>
+            <div class="menu-right">
+                <label class="toggle-label">
+                    <input type="checkbox" id="gridToggle" checked>
+                    <span>그리드</span>
+                </label>
+                <label class="toggle-label">
+                    <input type="checkbox" id="snapToggle" checked>
+                    <span>스냅</span>
+                </label>
+                <label class="toggle-label">
+                    <input type="checkbox" id="diagSnapToggle">
+                    <span>45°</span>
+                </label>
+                <select id="gridSizeSelect" class="mini-select" title="1칸 = 1m">
+                    <option value="32" selected>1m</option>
+                    <option value="64">2m</option>
+                    <option value="16">0.5m</option>
+                </select>
+            </div>
+            <input type="file" id="fileInput" accept=".json,.lvl" style="display:none">
+        </header>
+
+        <main class="workspace">
+            <!-- 왼쪽 도구 패널 -->
+            <aside class="tool-panel">
+                <div class="tool-section">
+                    <div class="tool-section-title">SIMULATION</div>
+                    <button id="simPreviewBtn" class="tool-btn-wide" title="경로 미리보기" style="background:#3d3a5a;">
+                        <i class="fa-solid fa-route" style="color:#a29bfe"></i>
+                        <span>경로 미리보기</span>
+                    </button>
+                    <button id="simStartBtn" class="tool-btn-wide" title="시뮬레이션 시작" style="background:#2d4a5a; margin-top:4px;">
+                        <i class="fa-solid fa-play" style="color:#4ecdc4"></i>
+                        <span>시뮬레이션 시작</span>
+                    </button>
+                    <button id="simStopBtn" class="tool-btn-wide" title="시뮬레이션 정지" style="background:#5a2d2d; margin-top:4px; display:none;">
+                        <i class="fa-solid fa-stop" style="color:#e74c3c"></i>
+                        <span>정지</span>
+                    </button>
+                    <button id="simPinBtn" class="tool-btn-wide" title="핀 꽂기 - 클릭 위치로 모든 에이전트 이동" style="background:#5a4a2d; margin-top:4px; display:none;">
+                        <i class="fa-solid fa-map-pin" style="color:#f39c12"></i>
+                        <span>핀 꽂기 모드</span>
+                    </button>
+                    <div id="simStatus" style="font-size:10px;color:#888;margin-top:4px;padding:0 4px;">
+                        Defence/Offence 배치 후 시작
+                    </div>
+                </div>
+
+                <input type="file" id="refImageInput" accept="image/*" style="display:none">
+
+                <div class="tool-section objects-section">
+                    <div class="tool-section-title">
+                        OBJECTS <span id="objectCount" class="badge">0</span>
+                    </div>
+                    <div class="objects-list-container">
+                        <ul id="objectsList" class="objects-ul"></ul>
+                    </div>
+                </div>
+            </aside>
+
+            <!-- 캔버스 영역 -->
+            <div class="canvas-area">
+                <div class="canvas-container" id="canvasContainer">
+                    <canvas id="gridCanvas"></canvas>
+                    <canvas id="mainCanvas"></canvas>
+                    <canvas id="uiCanvas"></canvas>
+                </div>
+                <div class="canvas-info">
+                    <span id="coordsDisplay">0m, 0m</span>
+                    <span id="objectInfo">-</span>
+                    <span id="hintText">V: 선택 | P: 다각형 | S: 스플라인 | Enter: 완성 | Esc: 취소</span>
+                </div>
+            </div>
+
+            <!-- 오른쪽 속성 패널 -->
+            <aside class="props-panel">
+                <div class="props-section">
+                    <div class="props-header">
+                        <span>PROPERTIES</span>
+                    </div>
+                    <div id="propsContent" class="props-content">
+                        <div class="props-empty">
+                            <i class="fa-solid fa-cube"></i>
+                            <p>오브젝트를 선택하세요</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="props-section">
+                    <div class="props-header">
+                        <span>HEIGHT (높이)</span>
+                    </div>
+                    <div class="props-content">
+                        <div class="height-control">
+                            <label>바닥 높이</label>
+                            <div class="height-input-row">
+                                <input type="number" id="floorHeight" value="0" step="0.5" min="-10" max="50">
+                                <span>m</span>
+                            </div>
+                            <div class="height-presets">
+                                <button class="height-btn" data-height="0">0m</button>
+                                <button class="height-btn" data-height="1">1m</button>
+                                <button class="height-btn" data-height="2">2m</button>
+                                <button class="height-btn" data-height="3">3m</button>
+                                <button class="height-btn" data-height="-1">-1m</button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+            </aside>
+        </main>
+    </div>
+
+    <!-- 3D 뷰어 모달 -->
+    <div id="viewer3dModal" class="modal-overlay" style="display:none">
+        <div class="modal-3d">
+            <div class="modal-3d-header">
+                <span>3D VIEW</span>
+                <div class="modal-3d-controls">
+                    <button id="walkModeBtn">🚶 워크 모드</button>
+                    <label><input type="checkbox" id="wireframeToggle"> 와이어프레임</label>
+                    <label><input type="checkbox" id="gridToggle3d" checked> 그리드</label>
+                    <button id="resetCamera3d">카메라 리셋</button>
+                    <button id="close3dBtn"><i class="fa-solid fa-xmark"></i></button>
+                </div>
+            </div>
+            <div id="viewer3dContainer"></div>
+            <div class="modal-3d-info">
+                <span id="viewerInfoText">마우스 드래그: 회전 | 스크롤: 줌 | 우클릭 드래그: 이동</span>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="level-rules.js"></script>
+    <script src="app.js"></script>
+    <script src="viewer3d.js"></script>
+</body>
+</html>

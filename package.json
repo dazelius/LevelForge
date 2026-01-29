@@ -1,0 +1,12 @@
+{
+  "name": "levelforge-converter",
+  "version": "1.0.0",
+  "description": "LEVELFORGE Auto FBX Converter",
+  "main": "watcher.js",
+  "scripts": {
+    "start": "node watcher.js"
+  },
+  "dependencies": {
+    "chokidar": "^3.5.3"
+  }
+}
