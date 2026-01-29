@@ -13,7 +13,6 @@ class LevelForge {
     
     // 단일 선택 전용 메소드
     select(id) {
-        console.log(`🔵 select(${id}) called`);
         this._singleSelectedId = id;
     }
     
@@ -22,11 +21,7 @@ class LevelForge {
     }
     
     isSelected(id) {
-        const result = this._singleSelectedId === id;
-        if (result) {
-            console.log(`✅ isSelected(${id}) = true, _singleSelectedId = ${this._singleSelectedId}`);
-        }
-        return result;
+        return this._singleSelectedId === id;
     }
     
     hasSelection() {
@@ -4196,10 +4191,6 @@ class LevelForge {
         const list = document.getElementById('objectsList');
         const floorObjs = this.objects.filter(o => o.floor === this.currentFloor);
         
-        // 디버그: 선택 상태 확인
-        console.log(`📋 updateObjectsList: _singleSelectedId = ${this._singleSelectedId}`);
-        console.log(`📋 오브젝트 IDs:`, floorObjs.map(o => ({ id: o.id, type: o.type, selected: this.isSelected(o.id) })));
-        
         const icons = {
             'floor-area': 'fa-vector-square', 'ramp': 'fa-sort-up',
             'wall': 'fa-square', 'wall-diag': 'fa-slash', 'polywall': 'fa-draw-polygon',
@@ -5113,7 +5104,30 @@ class LevelForge {
         try {
             const data = JSON.parse(content);
             this.objects = data.objects || [];
-            this.nextId = data.nextId || this.objects.length + 1;
+            
+            // ID 중복 수정: 모든 오브젝트에 새 고유 ID 할당
+            const idMap = new Map(); // 기존 ID -> 새 ID 매핑
+            let newId = 1;
+            this.objects.forEach(obj => {
+                if (!idMap.has(obj.id)) {
+                    idMap.set(obj.id, newId);
+                }
+                obj.id = idMap.get(obj.id) || newId++;
+                // 같은 기존 ID를 가진 다른 오브젝트가 있으면 새 ID 부여
+                if (idMap.get(obj.id) === obj.id) {
+                    newId++;
+                }
+            });
+            // 다시 한번 고유 ID 보장
+            const usedIds = new Set();
+            this.objects.forEach(obj => {
+                while (usedIds.has(obj.id)) {
+                    obj.id = newId++;
+                }
+                usedIds.add(obj.id);
+            });
+            this.nextId = newId;
+            
             this.gridSize = data.gridSize || 32;
             document.getElementById('gridSizeSelect').value = this.gridSize;
             
