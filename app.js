@@ -10,6 +10,23 @@ class LevelForge {
         this.bindEvents();
         this.render();
     }
+    
+    // 단일 선택 전용 메소드
+    select(id) {
+        this._singleSelectedId = id;
+    }
+    
+    clearSelection() {
+        this._singleSelectedId = null;
+    }
+    
+    isSelected(id) {
+        return this._singleSelectedId === id;
+    }
+    
+    hasSelection() {
+        return this._singleSelectedId !== null;
+    }
 
     initCanvas() {
         this.container = document.getElementById('canvasContainer');
@@ -33,7 +50,7 @@ class LevelForge {
         
         // Core data
         this.objects = [];
-        this.selectedIds = new Set();
+        this._singleSelectedId = null;  // 단일 선택 ID 저장
         
         // View state
         this.camera = { x: 0, y: 0, zoom: 1 };
@@ -520,7 +537,7 @@ class LevelForge {
                 this.selectedVertex = vertexHit;
                 this.isVertexDragging = true;
                 this.dragStart = { x: snapped.x, y: snapped.y };
-                this.selectedIds = new Set([vertexHit.objId]);
+                this.select(vertexHit.objId);
                 this.updateProps();
                 this.updateObjectsList();
                 this.render();
@@ -533,11 +550,11 @@ class LevelForge {
             const hit = this.hitTest(world.x, world.y);
             if (hit) {
                 // 항상 클릭한 오브젝트만 선택
-                this.selectedIds = new Set([hit.id]);
+                this.select(hit.id);
                 this.isDragging = true;
                 this.dragStart = { x: snapped.x, y: snapped.y };
             } else {
-                this.selectedIds = new Set();
+                this.clearSelection();
             }
             this.updateProps();
             this.updateObjectsList();
@@ -644,7 +661,7 @@ class LevelForge {
             return;
         }
 
-        if (this.isDragging && this.selectedIds.size > 0 && this.dragStart) {
+        if (this.isDragging && (this.hasSelection() ? 1 : 0) > 0 && this.dragStart) {
             const prevSnap = this.snap(this.dragStart.x, this.dragStart.y);
             const dx = snapped.x - prevSnap.x;
             const dy = snapped.y - prevSnap.y;
@@ -867,7 +884,7 @@ class LevelForge {
         }
 
         if (e.key === 'Escape') {
-            this.selectedIds = new Set();
+            this.clearSelection();
             this.pathPoints = [];
             this.updateProps();
             this.updateObjectsList();
@@ -899,7 +916,7 @@ class LevelForge {
         
         // 그리기 도구 선택 시 선택 상태 초기화 (select/pan 제외)
         if (!['select', 'pan'].includes(tool)) {
-            this.selectedIds = new Set();
+            this.clearSelection();
             this.selectedVertices = [];
             this.selectedVertex = null;
             this.updateProps();
@@ -1238,7 +1255,7 @@ class LevelForge {
         
         // 새로 만든 오브젝트만 선택 (기존 선택 해제)
         const newId = this.nextId - 1;
-        this.selectedIds = new Set([newId]);
+        this.select(newId);
         this.selectedVertices = [];
         this.selectedVertex = null;
         
@@ -1336,7 +1353,7 @@ class LevelForge {
         
         // 새로 만든 오브젝트만 선택 (기존 선택 해제)
         const newId = this.nextId - 1;
-        this.selectedIds = new Set([newId]);
+        this.select(newId);
         this.selectedVertices = [];
         this.selectedVertex = null;
         
@@ -1705,12 +1722,10 @@ class LevelForge {
     }
 
     getSelected() {
-        // 항상 단일 선택 강제
-        if (this.selectedIds.size > 1) {
-            const firstId = [...this.selectedIds][0];
-            this.selectedIds = new Set([firstId]);
-        }
-        return this.objects.filter(o => this.selectedIds.has(o.id));
+        // 단일 선택만 반환
+        if (this._singleSelectedId === null) return [];
+        const obj = this.objects.find(o => o.id === this._singleSelectedId);
+        return obj ? [obj] : [];
     }
 
     selectAll() {
@@ -1718,9 +1733,9 @@ class LevelForge {
     }
 
     deleteSelected() {
-        if (this.selectedIds.size === 0) return;
-        this.objects = this.objects.filter(o => !this.selectedIds.has(o.id));
-        this.selectedIds = new Set();
+        if ((this.hasSelection() ? 1 : 0) === 0) return;
+        this.objects = this.objects.filter(o => !this.isSelected(o.id));
+        this.clearSelection();
         this.saveState();
         this.updateProps();
         this.updateObjectsList();
@@ -1814,12 +1829,6 @@ class LevelForge {
     }
 
     render() {
-        // 항상 단일 선택 강제
-        if (this.selectedIds.size > 1) {
-            const firstId = [...this.selectedIds][0];
-            this.selectedIds = new Set([firstId]);
-        }
-        
         const ctx = this.ctx;
         ctx.clearRect(0, 0, this.width, this.height);
         
@@ -2643,7 +2652,7 @@ class LevelForge {
     drawPolyFloor(ctx, obj) {
         if (!obj.points || obj.points.length < 3) return;
         
-        const isSelected = this.selectedIds.has(obj.id);
+        const isSelected = this.isSelected(obj.id);
         
         // 평균 높이 계산
         let avgHeight = 0;
@@ -3932,13 +3941,6 @@ class LevelForge {
 
     // ========== UI UPDATES ==========
     updateProps() {
-        // 다중 선택 방지: 항상 단일 선택 유지
-        if (this.selectedIds.size > 1) {
-            console.warn('⚠️ updateProps: 다중 선택 감지, 첫 번째만 유지:', [...this.selectedIds]);
-            const firstId = [...this.selectedIds][0];
-            this.selectedIds = new Set([firstId]);
-        }
-        
         const container = document.getElementById('propsContent');
         const selected = this.getSelected();
 
@@ -4189,14 +4191,6 @@ class LevelForge {
         const list = document.getElementById('objectsList');
         const floorObjs = this.objects.filter(o => o.floor === this.currentFloor);
         
-        // 디버그: selectedIds에 여러 개가 있으면 경고
-        if (this.selectedIds.size > 1) {
-            console.warn('⚠️ 다중 선택 감지:', [...this.selectedIds]);
-            // 강제로 첫 번째만 유지
-            const firstId = [...this.selectedIds][0];
-            this.selectedIds = new Set([firstId]);
-        }
-        
         const icons = {
             'floor-area': 'fa-vector-square', 'ramp': 'fa-sort-up',
             'wall': 'fa-square', 'wall-diag': 'fa-slash', 'polywall': 'fa-draw-polygon',
@@ -4209,7 +4203,7 @@ class LevelForge {
         };
 
         list.innerHTML = floorObjs.map(o => `
-            <li class="${this.selectedIds.has(o.id) ? 'selected' : ''}" data-id="${o.id}">
+            <li class="${this.isSelected(o.id) ? 'selected' : ''}" data-id="${o.id}">
                 <i class="fa-solid ${icons[o.type] || 'fa-cube'}"></i>
                 <span>${o.label || o.type}</span>
             </li>
@@ -4219,7 +4213,7 @@ class LevelForge {
             li.addEventListener('click', e => {
                 const id = parseInt(li.dataset.id);
                 // 항상 단일 선택
-                this.selectedIds = new Set([id]);
+                this.select(id);
                 this.updateProps();
                 this.updateObjectsList();
                 this.render();
@@ -4242,7 +4236,7 @@ class LevelForge {
         if (this.historyIndex > 0) {
             this.historyIndex--;
             this.objects = JSON.parse(this.history[this.historyIndex]);
-            this.selectedIds = new Set();
+            this.clearSelection();
             this.invalidateNavGridCache();
             this.updateProps();
             this.updateObjectsList();
@@ -4254,7 +4248,7 @@ class LevelForge {
         if (this.historyIndex < this.history.length - 1) {
             this.historyIndex++;
             this.objects = JSON.parse(this.history[this.historyIndex]);
-            this.selectedIds = new Set();
+            this.clearSelection();
             this.invalidateNavGridCache();
             this.updateProps();
             this.updateObjectsList();
@@ -5046,7 +5040,7 @@ class LevelForge {
         if (this.objects.length > 0 && !confirm('현재 프로젝트를 삭제하고 새로 시작할까요?')) return;
         this.levelName = 'Untitled';
         this.objects = [];
-        this.selectedIds = new Set();
+        this.clearSelection();
         this.nextId = 1;
         this.historyIndex = -1;
         this.history = [];
@@ -5123,7 +5117,7 @@ class LevelForge {
             }
             this.updateLevelNameDisplay();
             
-            this.selectedIds = new Set();
+            this.clearSelection();
             this.saveState();
             this.updateProps();
             this.updateObjectsList();
