@@ -112,6 +112,17 @@
 
                 <input type="file" id="refImageInput" accept="image/*" style="display:none">
 
+                <div class="tool-section ai-section">
+                    <div class="tool-section-title">AI ASSISTANT</div>
+                    <button id="aiChatBtn" class="tool-btn-wide" title="AI와 레벨 디자인 상담" style="background:#4a3d5a;">
+                        <i class="fa-solid fa-robot" style="color:#a29bfe"></i>
+                        <span>AI 어시스턴트</span>
+                    </button>
+                    <div id="aiStatus" style="font-size:10px;color:#888;margin-top:4px;padding:0 4px;">
+                        레벨 분석 및 디자인 조언
+                    </div>
+                </div>
+
                 <div class="tool-section objects-section">
                     <div class="tool-section-title">
                         OBJECTS <span id="objectCount" class="badge">0</span>
@@ -121,6 +132,26 @@
                     </div>
                 </div>
             </aside>
+
+            <!-- AI 채팅 패널 -->
+            <div id="aiPanel" class="ai-panel" style="display:none;">
+                <div class="ai-panel-header">
+                    <span><i class="fa-solid fa-robot"></i> AI Level Designer</span>
+                    <button id="aiCloseBtn" class="ai-close-btn"><i class="fa-solid fa-times"></i></button>
+                </div>
+                <div id="aiMessages" class="ai-messages"></div>
+                <div class="ai-input-area">
+                    <div class="ai-quick-actions">
+                        <button class="ai-quick-btn" data-prompt="현재 레벨을 분석하고 개선점을 알려줘">📊 분석</button>
+                        <button class="ai-quick-btn" data-prompt="초크포인트와 사이트라인을 체크해줘">🎯 초크포인트</button>
+                        <button class="ai-quick-btn" data-prompt="밸런스 문제가 있는지 확인해줘">⚖️ 밸런스</button>
+                    </div>
+                    <div class="ai-input-row">
+                        <input type="text" id="aiInput" placeholder="레벨 디자인에 대해 질문하세요..." />
+                        <button id="aiSendBtn"><i class="fa-solid fa-paper-plane"></i></button>
+                    </div>
+                </div>
+            </div>
 
             <!-- 캔버스 영역 -->
             <div class="canvas-area">

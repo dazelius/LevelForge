@@ -265,6 +265,20 @@ class LevelForge {
         document.getElementById('simStopBtn')?.addEventListener('click', () => this.stopSimulation());
         document.getElementById('simPinBtn')?.addEventListener('click', () => this.togglePinMode());
         
+        // AI Assistant
+        document.getElementById('aiChatBtn')?.addEventListener('click', () => this.toggleAIPanel());
+        document.getElementById('aiCloseBtn')?.addEventListener('click', () => this.toggleAIPanel(false));
+        document.getElementById('aiSendBtn')?.addEventListener('click', () => this.sendAIMessage());
+        document.getElementById('aiInput')?.addEventListener('keypress', e => {
+            if (e.key === 'Enter') this.sendAIMessage();
+        });
+        document.querySelectorAll('.ai-quick-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                document.getElementById('aiInput').value = btn.dataset.prompt;
+                this.sendAIMessage();
+            });
+        });
+        
         document.getElementById('undoBtn').addEventListener('click', () => this.undo());
         document.getElementById('redoBtn').addEventListener('click', () => this.redo());
         document.getElementById('zoomIn').addEventListener('click', () => this.zoom(1.25));
@@ -7439,6 +7453,111 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
             }
             
             ctx.restore();
+        }
+    }
+    
+    // ========== AI ASSISTANT ==========
+    toggleAIPanel(show = null) {
+        const panel = document.getElementById('aiPanel');
+        if (!panel) return;
+        
+        const isVisible = panel.style.display !== 'none';
+        const shouldShow = show !== null ? show : !isVisible;
+        
+        panel.style.display = shouldShow ? 'flex' : 'none';
+        
+        if (shouldShow) {
+            document.getElementById('aiInput')?.focus();
+        }
+    }
+    
+    async sendAIMessage() {
+        const input = document.getElementById('aiInput');
+        const messages = document.getElementById('aiMessages');
+        const prompt = input?.value?.trim();
+        
+        if (!prompt) return;
+        
+        // 사용자 메시지 추가
+        this.addAIMessage(prompt, 'user');
+        input.value = '';
+        
+        // 로딩 메시지
+        const loadingMsg = this.addAIMessage('생각 중...', 'loading');
+        
+        try {
+            const response = await fetch('http://localhost:3001/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt,
+                    levelData: {
+                        levelName: this.levelName,
+                        objects: this.objects,
+                        gridSize: this.gridSize
+                    }
+                })
+            });
+            
+            loadingMsg.remove();
+            
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.error || 'AI 서버 오류');
+            }
+            
+            const data = await response.json();
+            this.addAIMessage(data.response, 'assistant');
+            
+            // JSON 응답이 포함되어 있으면 파싱하여 오브젝트 추가 제안
+            this.parseAIResponse(data.response);
+            
+        } catch (err) {
+            loadingMsg?.remove();
+            if (err.message.includes('fetch')) {
+                this.addAIMessage('AI 서버에 연결할 수 없습니다.\n\n터미널에서 실행:\nnode ai-server.js', 'error');
+            } else {
+                this.addAIMessage(`오류: ${err.message}`, 'error');
+            }
+        }
+    }
+    
+    addAIMessage(text, type) {
+        const messages = document.getElementById('aiMessages');
+        if (!messages) return null;
+        
+        const msg = document.createElement('div');
+        msg.className = `ai-message ${type}`;
+        msg.textContent = text;
+        messages.appendChild(msg);
+        messages.scrollTop = messages.scrollHeight;
+        
+        return msg;
+    }
+    
+    parseAIResponse(response) {
+        // JSON 블록 찾기
+        const jsonMatch = response.match(/```json\n?([\s\S]*?)```/);
+        if (jsonMatch) {
+            try {
+                const data = JSON.parse(jsonMatch[1]);
+                if (data.objects && Array.isArray(data.objects)) {
+                    // 오브젝트 추가 확인
+                    if (confirm(`AI가 ${data.objects.length}개의 오브젝트를 제안했습니다. 추가할까요?`)) {
+                        data.objects.forEach(obj => {
+                            obj.id = this.nextId++;
+                            obj.floor = this.currentFloor;
+                            this.objects.push(obj);
+                        });
+                        this.saveState();
+                        this.updateObjectsList();
+                        this.render();
+                        this.showToast(`🤖 ${data.objects.length}개 오브젝트 추가됨`);
+                    }
+                }
+            } catch (e) {
+                // JSON 파싱 실패 - 무시
+            }
         }
     }
 }
