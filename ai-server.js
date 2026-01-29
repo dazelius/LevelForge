@@ -66,14 +66,23 @@ function extractJSON(text) {
 
 // Claude API 호출
 async function callClaude(prompt, levelData) {
-    const systemPrompt = `OUTPUT FORMAT: Pure JSON only. No text before or after.
+    const systemPrompt = `You generate polyfloor objects for FPS level design. OUTPUT ONLY VALID JSON.
 
-EXACT FORMAT:
-{"objects":[{"type":"polyfloor","points":[{"x":0,"y":0,"z":0},{"x":128,"y":0,"z":0},{"x":128,"y":128,"z":0},{"x":0,"y":128,"z":0}],"floorHeight":0,"floor":0,"label":"Corridor","closed":true}],"description":"Created corridors"}
+FORMAT:
+{"objects":[{"type":"polyfloor","points":[{"x":100,"y":100,"z":0},{"x":260,"y":100,"z":0},{"x":260,"y":260,"z":0},{"x":100,"y":260,"z":0}],"floorHeight":0,"floor":0,"label":"Corridor A","closed":true}]}
 
-COORDINATE SYSTEM: 32px = 1m, corridor width 128-192px
+RULES:
+- 32px = 1m
+- Corridor width: 128-192px (4-6m)
+- Rectangle corridors: exactly 4 points, clockwise
+- L-shape corridors: 6 points
+- MUST use exact coordinates from edge info provided
+- Connect edge points precisely (within 1px)
 
-CRITICAL: Start response with { and end with }. No Korean text. No markdown. No explanation.`;
+Example corridor connecting edge (100,100)-(100,260) to edge (400,150)-(400,310):
+{"objects":[{"type":"polyfloor","points":[{"x":100,"y":130,"z":0},{"x":400,"y":150,"z":0},{"x":400,"y":310,"z":0},{"x":100,"y":230,"z":0}],"floorHeight":0,"floor":0,"label":"Connector","closed":true}]}
+
+OUTPUT JSON ONLY. No explanation.`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',

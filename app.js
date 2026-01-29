@@ -7696,96 +7696,200 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         if (bar) bar.style.display = 'none';
     }
     
-    async aiAutoGenerate(mode) {
-        // 3단계 반복 정제 프로세스
-        const stages = {
-            connect: [
-                { name: '1/3 구조 분석', prompt: `레벨을 분석하고 연결이 필요한 바닥들 사이에 기본 통로를 생성해줘. 폭 128~192px, 기존 점과 연결.` },
-                { name: '2/3 연결부 정교화', prompt: `이전 결과를 바탕으로 연결부가 정확히 맞닿도록 좌표를 조정하고, 빠진 연결이 있으면 추가해줘.` },
-                { name: '3/3 최종 검증', prompt: `모든 통로가 기존 바닥과 정확히 연결되는지 확인하고, 이동 가능한 완전한 네트워크가 되도록 마무리해줘.` }
-            ],
-            expand: [
-                { name: '1/3 영역 탐색', prompt: `레벨의 빈 공간을 분석하고 확장 가능한 영역에 새 바닥을 생성해줘.` },
-                { name: '2/3 루트 다양화', prompt: `이전 결과를 기반으로 다양한 이동 루트가 생기도록 추가 바닥을 배치해줘. 3초 룰(15m) 고려.` },
-                { name: '3/3 연결 완성', prompt: `모든 새 바닥이 기존 바닥과 연결되도록 통로를 추가해줘.` }
-            ],
-            flank: [
-                { name: '1/2 우회로 설계', prompt: `Offence에서 Objective로 가는 새로운 측면 경로를 설계해줘.` },
-                { name: '2/2 연결 및 완성', prompt: `우회 경로가 기존 바닥과 완전히 연결되도록 마무리해줘.` }
-            ]
-        };
+    // 기존 바닥들의 연결 가능한 edge 분석
+    analyzeFloorEdges() {
+        const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
+        const edges = [];
         
-        const modeStages = stages[mode];
-        if (!modeStages) return;
-        
-        this.aiIterationResults = [];  // 각 단계 결과 저장
-        
-        for (let i = 0; i < modeStages.length; i++) {
-            const stage = modeStages[i];
-            this.updateAIStatus(`🤖 ${stage.name}...`, 'loading');
-            
-            // 이전 단계 결과를 포함한 컨텍스트
-            const contextPrompt = i > 0 && this.aiIterationResults.length > 0
-                ? `이전 단계에서 생성된 오브젝트들:\n${JSON.stringify(this.aiIterationResults)}\n\n${stage.prompt}`
-                : stage.prompt;
-            
-            try {
-                const response = await fetch('http://localhost:3001/ai/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        prompt: contextPrompt,
-                        levelData: {
-                            levelName: this.levelName,
-                            objects: [...this.objects, ...this.aiIterationResults],
-                            gridSize: this.gridSize
-                        }
-                    })
-                });
+        floors.forEach(floor => {
+            const pts = floor.points;
+            for (let i = 0; i < pts.length; i++) {
+                const p1 = pts[i];
+                const p2 = pts[(i + 1) % pts.length];
+                const midX = (p1.x + p2.x) / 2;
+                const midY = (p1.y + p2.y) / 2;
+                const length = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
                 
-                if (!response.ok) throw new Error('AI 서버 오류');
-                
-                const data = await response.json();
-                const parsed = this.parseAIResponseRaw(data.response);
-                
-                if (parsed && parsed.objects && parsed.objects.length > 0) {
-                    // 이번 단계 결과를 누적
-                    const newObjs = parsed.objects.map(obj => ({
-                        ...obj,
-                        id: this.nextId++,
-                        floor: obj.floor ?? this.currentFloor,
-                        category: obj.category || 'floors',
-                        color: obj.color || 'hsla(280, 60%, 50%, 0.6)',
-                        closed: obj.closed ?? true,
-                        floorHeight: obj.floorHeight ?? 0
-                    }));
-                    this.aiIterationResults.push(...newObjs);
-                    
-                    // 미리보기 업데이트
-                    this.aiPendingObjects = [...this.aiIterationResults];
-                    this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, idx) => idx));
-                    this.render();
-                    
-                    this.updateAIStatus(`✅ ${stage.name} 완료 (${this.aiIterationResults.length}개)`, 'success');
-                    await this.sleep(500);  // 단계 사이 딜레이
+                // 4m 이상 edge만
+                if (length >= 128) {
+                    edges.push({
+                        floorId: floor.id,
+                        floorLabel: floor.label || `Floor ${floor.id}`,
+                        p1: { x: p1.x, y: p1.y },
+                        p2: { x: p2.x, y: p2.y },
+                        mid: { x: midX, y: midY },
+                        length: Math.round(length / 32),
+                        direction: this.getEdgeDirection(p1, p2)
+                    });
                 }
+            }
+        });
+        
+        return edges;
+    }
+    
+    getEdgeDirection(p1, p2) {
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        if (Math.abs(dx) > Math.abs(dy)) {
+            return dy >= 0 ? 'south' : 'north';  // 수평 edge
+        } else {
+            return dx >= 0 ? 'east' : 'west';    // 수직 edge
+        }
+    }
+    
+    // 연결되지 않은 edge 쌍 찾기
+    findDisconnectedEdgePairs() {
+        const edges = this.analyzeFloorEdges();
+        const pairs = [];
+        
+        for (let i = 0; i < edges.length; i++) {
+            for (let j = i + 1; j < edges.length; j++) {
+                const e1 = edges[i];
+                const e2 = edges[j];
                 
-            } catch (err) {
-                console.error(`AI ${stage.name} 오류:`, err);
-                this.updateAIStatus(`⚠️ ${stage.name} 실패, 계속...`, 'warning');
-                await this.sleep(300);
+                // 같은 floor면 스킵
+                if (e1.floorId === e2.floorId) continue;
+                
+                // 거리 계산
+                const dist = Math.sqrt((e1.mid.x - e2.mid.x) ** 2 + (e1.mid.y - e2.mid.y) ** 2);
+                
+                // 2m~30m 거리의 마주보는 edge
+                if (dist >= 64 && dist <= 960) {
+                    const isOpposite = 
+                        (e1.direction === 'north' && e2.direction === 'south') ||
+                        (e1.direction === 'south' && e2.direction === 'north') ||
+                        (e1.direction === 'east' && e2.direction === 'west') ||
+                        (e1.direction === 'west' && e2.direction === 'east');
+                    
+                    if (isOpposite || dist < 300) {
+                        pairs.push({
+                            edge1: e1,
+                            edge2: e2,
+                            distance: Math.round(dist / 32)
+                        });
+                    }
+                }
             }
         }
         
-        // 최종 결과
-        if (this.aiIterationResults.length > 0) {
-            this.aiPendingObjects = this.aiIterationResults;
-            this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, i) => i));
-            this.addAIActionButtons(`${this.aiIterationResults.length}개 오브젝트 생성됨`);
-            this.updateAIStatus(`🎉 전체 완료 - ${this.aiIterationResults.length}개 생성`, 'success');
-        } else {
-            this.updateAIStatus('❌ 생성 실패 - 다시 시도해주세요', 'error');
+        // 거리순 정렬
+        pairs.sort((a, b) => a.distance - b.distance);
+        return pairs.slice(0, 5);  // 상위 5개
+    }
+    
+    async aiAutoGenerate(mode) {
+        // 기존 바닥 edge 분석
+        const disconnectedPairs = this.findDisconnectedEdgePairs();
+        const edges = this.analyzeFloorEdges();
+        
+        // 정확한 좌표 정보 제공
+        const edgeInfo = disconnectedPairs.map((pair, i) => 
+            `연결${i+1}: "${pair.edge1.floorLabel}" edge(${pair.edge1.p1.x},${pair.edge1.p1.y})-(${pair.edge1.p2.x},${pair.edge1.p2.y}) ↔ "${pair.edge2.floorLabel}" edge(${pair.edge2.p1.x},${pair.edge2.p1.y})-(${pair.edge2.p2.x},${pair.edge2.p2.y}), 거리:${pair.distance}m`
+        ).join('\n');
+        
+        const prompt = mode === 'connect' 
+            ? `다음 edge들을 연결하는 직사각형 통로를 생성해줘.
+
+연결할 edge 쌍들:
+${edgeInfo || '연결 가능한 edge가 없습니다. 기존 바닥 근처에 새 통로를 만들어주세요.'}
+
+규칙:
+1. 통로는 반드시 edge의 좌표와 정확히 맞닿아야 함
+2. 통로 폭: 128~192px (4~6m)
+3. 직선 또는 L자형 통로만 사용
+4. points 배열은 시계방향으로 4~6개 점`
+            : mode === 'expand'
+            ? `기존 바닥 주변에 새로운 영역을 확장해줘.
+
+기존 edge 정보:
+${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x},${e.p2.y}), ${e.length}m, ${e.direction}`).join('\n')}
+
+규칙:
+1. 기존 edge에 정확히 연결
+2. 다양한 전투 공간 생성 (8x8m ~ 15x15m)
+3. 3초 룰 고려 (15m마다 방향 전환 가능)`
+            : `Offence에서 Objective로 가는 측면 우회 경로를 만들어줘.`;
+        
+        this.updateAIStatus('🤖 Edge 분석 완료, 생성 중...', 'loading');
+        
+        try {
+            const response = await fetch('http://localhost:3001/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt,
+                    levelData: {
+                        levelName: this.levelName,
+                        objects: this.objects,
+                        gridSize: this.gridSize
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('AI 서버 오류');
+            
+            const data = await response.json();
+            const parsed = this.parseAIResponseRaw(data.response);
+            
+            if (parsed?.objects?.length > 0) {
+                // 좌표 스냅 처리 (기존 점에 맞추기)
+                const snappedObjects = this.snapAIObjectsToEdges(parsed.objects);
+                
+                this.aiPendingObjects = snappedObjects.map(obj => ({
+                    ...obj,
+                    id: this.nextId++,
+                    floor: this.currentFloor,
+                    category: 'floors',
+                    color: 'hsla(180, 60%, 45%, 0.6)',
+                    closed: true,
+                    floorHeight: obj.floorHeight ?? 0
+                }));
+                
+                this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, i) => i));
+                this.addAIActionButtons(`${this.aiPendingObjects.length}개 통로 생성`);
+                this.updateAIStatus(`✅ ${this.aiPendingObjects.length}개 생성 완료`, 'success');
+                this.render();
+            } else {
+                this.updateAIStatus('❌ 생성 실패', 'error');
+            }
+            
+        } catch (err) {
+            this.updateAIStatus('❌ AI 서버 오류', 'error');
+            console.error(err);
         }
+    }
+    
+    // AI 생성 오브젝트를 기존 edge에 스냅
+    snapAIObjectsToEdges(objects) {
+        const existingPoints = [];
+        this.objects.forEach(obj => {
+            if (obj.points) {
+                obj.points.forEach(p => existingPoints.push({ x: p.x, y: p.y }));
+            }
+        });
+        
+        return objects.map(obj => {
+            if (!obj.points) return obj;
+            
+            const snappedPoints = obj.points.map(p => {
+                // 가장 가까운 기존 점 찾기 (64px = 2m 이내)
+                let closest = null;
+                let minDist = 64;
+                
+                existingPoints.forEach(ep => {
+                    const dist = Math.sqrt((p.x - ep.x) ** 2 + (p.y - ep.y) ** 2);
+                    if (dist < minDist) {
+                        minDist = dist;
+                        closest = ep;
+                    }
+                });
+                
+                return closest ? { x: closest.x, y: closest.y, z: p.z || 0 } : p;
+            });
+            
+            return { ...obj, points: snappedPoints };
+        });
     }
     
     sleep(ms) {
