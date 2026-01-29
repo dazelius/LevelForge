@@ -533,6 +533,19 @@ class LevelForge {
             this.placePin(world.x, world.y);
             return;
         }
+        
+        // AI 영역 지정 모드
+        if (this.aiAreaMode && e.button === 0) {
+            this.aiAreaDragStart = { x: world.x, y: world.y };
+            return;
+        }
+        
+        // AI 미리보기 클릭 (선택/해제)
+        if (this.aiPendingObjects && e.button === 0) {
+            if (this.handleAIPreviewClick(world.x, world.y)) {
+                return;
+            }
+        }
 
         // Reference image drag mode
         if (this.refDragMode && this.refImage && e.button === 0) {
@@ -656,6 +669,12 @@ class LevelForge {
             this.render();
             return;
         }
+        
+        // AI 영역 드래그
+        if (this.aiAreaMode && this.aiAreaDragStart) {
+            this.handleAIAreaDrag(this.aiAreaDragStart.x, this.aiAreaDragStart.y, world.x, world.y);
+            return;
+        }
 
         if (this.isPanning) {
             this.camera.x = sx - this.panStart.x;
@@ -775,6 +794,13 @@ class LevelForge {
             }
             this.currentStroke = null;
             this.render();
+            return;
+        }
+        
+        // AI 영역 지정 완료
+        if (this.aiAreaMode && this.aiAreaDragStart) {
+            this.aiAreaDragStart = null;
+            this.finishAIAreaSelection();
             return;
         }
 
@@ -7692,81 +7718,230 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         ctx.translate(this.camera.x, this.camera.y);
         ctx.scale(this.camera.zoom, this.camera.zoom);
         
-        this.aiPendingObjects.forEach(obj => {
+        this.aiPendingObjects.forEach((obj, idx) => {
             if (obj.type === 'polyfloor' && obj.points) {
-                // 미리보기 스타일 (점선, 보라색)
+                const isSelected = this.aiSelectedIndices?.has(idx);
+                
+                // 미리보기 스타일 (점선)
                 ctx.beginPath();
                 ctx.moveTo(obj.points[0].x, obj.points[0].y);
                 obj.points.forEach(p => ctx.lineTo(p.x, p.y));
                 ctx.closePath();
                 
-                ctx.fillStyle = 'rgba(162, 155, 254, 0.3)';
+                // 선택된 것은 더 밝게
+                ctx.fillStyle = isSelected ? 'rgba(78, 205, 196, 0.4)' : 'rgba(162, 155, 254, 0.25)';
                 ctx.fill();
                 
-                ctx.strokeStyle = '#a29bfe';
-                ctx.lineWidth = 3;
+                ctx.strokeStyle = isSelected ? '#4ecdc4' : '#a29bfe';
+                ctx.lineWidth = isSelected ? 4 : 2;
                 ctx.setLineDash([8, 4]);
                 ctx.stroke();
                 ctx.setLineDash([]);
                 
-                // 레이블
-                if (obj.label) {
-                    const cx = obj.points.reduce((s, p) => s + p.x, 0) / obj.points.length;
-                    const cy = obj.points.reduce((s, p) => s + p.y, 0) / obj.points.length;
-                    ctx.font = 'bold 14px sans-serif';
-                    ctx.fillStyle = '#a29bfe';
-                    ctx.textAlign = 'center';
-                    ctx.fillText(`🤖 ${obj.label}`, cx, cy);
-                }
+                // 레이블 + 인덱스
+                const cx = obj.points.reduce((s, p) => s + p.x, 0) / obj.points.length;
+                const cy = obj.points.reduce((s, p) => s + p.y, 0) / obj.points.length;
+                ctx.font = 'bold 14px sans-serif';
+                ctx.fillStyle = isSelected ? '#4ecdc4' : '#a29bfe';
+                ctx.textAlign = 'center';
+                
+                const checkbox = isSelected ? '☑' : '☐';
+                ctx.fillText(`${checkbox} ${idx + 1}. ${obj.label || 'floor'}`, cx, cy);
             }
         });
         
+        // AI 영역 지정 모드 표시
+        if (this.aiAreaSelection) {
+            const { startX, startY, endX, endY } = this.aiAreaSelection;
+            const x = Math.min(startX, endX);
+            const y = Math.min(startY, endY);
+            const w = Math.abs(endX - startX);
+            const h = Math.abs(endY - startY);
+            
+            ctx.fillStyle = 'rgba(255, 193, 7, 0.2)';
+            ctx.fillRect(x, y, w, h);
+            ctx.strokeStyle = '#ffc107';
+            ctx.lineWidth = 2;
+            ctx.setLineDash([6, 3]);
+            ctx.strokeRect(x, y, w, h);
+            ctx.setLineDash([]);
+            
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillStyle = '#ffc107';
+            ctx.textAlign = 'center';
+            ctx.fillText('🤖 AI 작업 영역', x + w/2, y + h/2);
+        }
+        
         ctx.restore();
+    }
+    
+    // AI 미리보기에서 오브젝트 클릭 토글
+    handleAIPreviewClick(worldX, worldY) {
+        if (!this.aiPendingObjects) return false;
+        
+        for (let i = 0; i < this.aiPendingObjects.length; i++) {
+            const obj = this.aiPendingObjects[i];
+            if (obj.type === 'polyfloor' && obj.points && this.isPointInPolygon(worldX, worldY, obj.points)) {
+                if (!this.aiSelectedIndices) this.aiSelectedIndices = new Set();
+                
+                if (this.aiSelectedIndices.has(i)) {
+                    this.aiSelectedIndices.delete(i);
+                } else {
+                    this.aiSelectedIndices.add(i);
+                }
+                this.showAIPreview();
+                this.updateAISelectionUI();
+                return true;
+            }
+        }
+        return false;
+    }
+    
+    updateAISelectionUI() {
+        const countEl = document.getElementById('aiSelectedCount');
+        if (countEl && this.aiSelectedIndices) {
+            countEl.textContent = `${this.aiSelectedIndices.size}/${this.aiPendingObjects.length} 선택됨`;
+        }
     }
     
     addAIActionButtons(description) {
         const messages = document.getElementById('aiMessages');
         if (!messages) return;
         
+        // 초기 선택: 모두 선택
+        this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, i) => i));
+        
         const actionDiv = document.createElement('div');
         actionDiv.className = 'ai-message ai-action';
+        actionDiv.id = 'aiActionPanel';
+        
+        // 오브젝트 목록 생성
+        let listHtml = this.aiPendingObjects.map((obj, i) => `
+            <label class="ai-obj-item" data-idx="${i}">
+                <input type="checkbox" checked onchange="app.toggleAIObject(${i}, this.checked)">
+                <span>${i + 1}. ${obj.label || obj.type}</span>
+            </label>
+        `).join('');
+        
         actionDiv.innerHTML = `
             <div style="margin-bottom:8px;">🤖 <strong>${description}</strong></div>
-            <div style="display:flex;gap:8px;">
-                <button class="ai-apply-btn" onclick="app.applyAIObjects()">✅ 적용</button>
-                <button class="ai-cancel-btn" onclick="app.cancelAIObjects()">❌ 취소</button>
+            <div class="ai-obj-list">${listHtml}</div>
+            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
+                <span id="aiSelectedCount" style="font-size:11px;color:#888;">${this.aiPendingObjects.length}/${this.aiPendingObjects.length} 선택됨</span>
+                <div style="display:flex;gap:6px;">
+                    <button class="ai-apply-btn" onclick="app.applyAIObjects()">✅ 선택 적용</button>
+                    <button class="ai-cancel-btn" onclick="app.cancelAIObjects()">❌ 취소</button>
+                </div>
             </div>
         `;
         messages.appendChild(actionDiv);
         messages.scrollTop = messages.scrollHeight;
+        
+        this.showAIPreview();
+    }
+    
+    toggleAIObject(idx, checked) {
+        if (!this.aiSelectedIndices) this.aiSelectedIndices = new Set();
+        
+        if (checked) {
+            this.aiSelectedIndices.add(idx);
+        } else {
+            this.aiSelectedIndices.delete(idx);
+        }
+        this.updateAISelectionUI();
+        this.showAIPreview();
     }
     
     applyAIObjects() {
         if (!this.aiPendingObjects || this.aiPendingObjects.length === 0) return;
         
-        this.aiPendingObjects.forEach(obj => {
+        // 선택된 것만 적용
+        const toApply = this.aiPendingObjects.filter((_, i) => this.aiSelectedIndices?.has(i));
+        
+        if (toApply.length === 0) {
+            this.showToast('선택된 오브젝트가 없습니다');
+            return;
+        }
+        
+        toApply.forEach(obj => {
             this.objects.push(obj);
         });
         
-        const count = this.aiPendingObjects.length;
+        const count = toApply.length;
         this.aiPendingObjects = null;
+        this.aiSelectedIndices = null;
         
         this.saveState();
         this.updateObjectsList();
         this.render();
         this.showToast(`🤖 ${count}개 오브젝트 추가됨`);
         
-        // 액션 버튼 숨기기
         document.querySelectorAll('.ai-action').forEach(el => el.remove());
     }
     
     cancelAIObjects() {
         this.aiPendingObjects = null;
+        this.aiSelectedIndices = null;
         this.render();
         this.showToast('AI 제안 취소됨');
         
-        // 액션 버튼 숨기기
         document.querySelectorAll('.ai-action').forEach(el => el.remove());
+    }
+    
+    // AI 영역 지정 모드
+    startAIAreaSelection() {
+        this.aiAreaMode = true;
+        this.showToast('🤖 AI 작업 영역을 드래그로 지정하세요');
+        document.body.style.cursor = 'crosshair';
+    }
+    
+    handleAIAreaDrag(startX, startY, endX, endY) {
+        this.aiAreaSelection = { startX, startY, endX, endY };
+        this.render();
+        this.showAIPreview();
+    }
+    
+    finishAIAreaSelection() {
+        if (!this.aiAreaSelection) return;
+        
+        const { startX, startY, endX, endY } = this.aiAreaSelection;
+        const x1 = Math.min(startX, endX);
+        const y1 = Math.min(startY, endY);
+        const x2 = Math.max(startX, endX);
+        const y2 = Math.max(startY, endY);
+        const w = x2 - x1;
+        const h = y2 - y1;
+        
+        // 최소 크기 체크
+        if (w < 64 || h < 64) {
+            this.aiAreaSelection = null;
+            this.aiAreaMode = false;
+            document.body.style.cursor = '';
+            this.render();
+            return;
+        }
+        
+        // AI에게 영역 정보와 함께 요청
+        const prompt = `다음 영역에 바닥/통로를 만들어줘:
+- 좌상단: (${Math.round(x1)}, ${Math.round(y1)})
+- 우하단: (${Math.round(x2)}, ${Math.round(y2)})
+- 크기: ${Math.round(w/32)}m x ${Math.round(h/32)}m
+
+기존 바닥들과 자연스럽게 연결되도록 해줘.`;
+        
+        const input = document.getElementById('aiInput');
+        if (input) {
+            input.value = prompt;
+        }
+        
+        this.aiAreaMode = false;
+        document.body.style.cursor = '';
+        
+        // AI 패널 열기
+        const panel = document.getElementById('aiPanel');
+        if (panel) panel.style.display = 'flex';
+        
+        this.showToast('영역이 지정되었습니다. 메시지를 수정하거나 전송하세요.');
     }
 }
 

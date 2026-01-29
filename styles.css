@@ -1495,6 +1495,42 @@ body {
     border-color: #e74c3c;
 }
 
+.ai-obj-list {
+    max-height: 150px;
+    overflow-y: auto;
+    margin: 8px 0;
+    padding: 4px;
+    background: rgba(0,0,0,0.2);
+    border-radius: 4px;
+}
+
+.ai-obj-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 12px;
+}
+
+.ai-obj-item:hover {
+    background: rgba(162, 155, 254, 0.2);
+}
+
+.ai-obj-item input {
+    accent-color: #4ecdc4;
+}
+
+.ai-area-btn {
+    background: linear-gradient(135deg, #f39c12, #e67e22) !important;
+    color: #fff !important;
+}
+
+.ai-area-btn:hover {
+    background: linear-gradient(135deg, #e67e22, #d35400) !important;
+}
+
 /* Recent Files Dropdown */
 .recent-dropdown {
     position: absolute;
