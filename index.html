@@ -21,6 +21,12 @@
                 <div class="menu-group">
                     <button id="newBtn" class="menu-btn" title="새 프로젝트"><i class="fa-solid fa-file"></i></button>
                     <button id="openBtn" class="menu-btn" title="열기 (Ctrl+O)"><i class="fa-solid fa-folder-open"></i></button>
+                    <button id="recentBtn" class="menu-btn" title="최근 파일"><i class="fa-solid fa-clock-rotate-left"></i></button>
+                    <div id="recentDropdown" class="recent-dropdown" style="display:none;">
+                        <div class="recent-header">최근 파일</div>
+                        <ul id="recentList" class="recent-list"></ul>
+                        <div class="recent-empty" id="recentEmpty">최근 파일이 없습니다</div>
+                    </div>
                     <button id="saveBtn" class="menu-btn" title="저장 (Ctrl+S)"><i class="fa-solid fa-floppy-disk"></i></button>
                     <button id="exportBtn" class="menu-btn" title="이미지 내보내기"><i class="fa-solid fa-image"></i></button>
                     <button id="exportBlenderBtn" class="menu-btn" title="Blender로 내보내기" style="color:#ea7600"><i class="fa-solid fa-cube"></i>B</button>

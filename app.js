@@ -48,6 +48,9 @@ class LevelForge {
         // FBX output path (loaded from localStorage)
         this.fbxOutputPath = localStorage.getItem('levelforge_fbxOutputPath') || 'C:\\Aegis\\Client\\Project_Aegis\\Assets\\DevAssets(not packed)\\_DevArt\\Environment\\Temp_M1\\M1_Maps\\LevelData';
         
+        // Recent files (최대 10개)
+        this.recentFiles = JSON.parse(localStorage.getItem('levelforge_recentFiles') || '[]');
+        
         // Core data
         this.objects = [];
         this._singleSelectedId = null;  // 단일 선택 ID 저장
@@ -219,6 +222,16 @@ class LevelForge {
         // Menu buttons
         document.getElementById('newBtn').addEventListener('click', () => this.newProject());
         document.getElementById('openBtn').addEventListener('click', () => this.openFile());
+        document.getElementById('recentBtn')?.addEventListener('click', e => {
+            e.stopPropagation();
+            this.toggleRecentDropdown();
+        });
+        document.addEventListener('click', e => {
+            const dropdown = document.getElementById('recentDropdown');
+            if (dropdown && !dropdown.contains(e.target) && e.target.id !== 'recentBtn') {
+                dropdown.style.display = 'none';
+            }
+        });
         document.getElementById('fileInput').addEventListener('change', e => this.loadFile(e));
         document.getElementById('levelNameDisplay')?.addEventListener('click', () => this.showRenameDialog());
         document.getElementById('saveBtn').addEventListener('click', () => this.saveFile());
@@ -5159,6 +5172,10 @@ class LevelForge {
             this.updateProps();
             this.updateObjectsList();
             this.zoomFit();
+            
+            // 최근 파일에 추가
+            this.addToRecentFiles(filename);
+            
             this.showToast(`📂 ${this.levelName} 로드 완료`);
         } catch (err) {
             alert('파일을 불러올 수 없습니다.');
@@ -7456,6 +7473,104 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         }
     }
     
+    // ========== RECENT FILES ==========
+    addToRecentFiles(filename) {
+        const entry = {
+            name: filename,
+            date: new Date().toISOString()
+        };
+        
+        // 이미 있으면 제거 (맨 앞으로 이동)
+        this.recentFiles = this.recentFiles.filter(f => f.name !== filename);
+        
+        // 맨 앞에 추가
+        this.recentFiles.unshift(entry);
+        
+        // 최대 10개 유지
+        if (this.recentFiles.length > 10) {
+            this.recentFiles = this.recentFiles.slice(0, 10);
+        }
+        
+        // 저장
+        localStorage.setItem('levelforge_recentFiles', JSON.stringify(this.recentFiles));
+    }
+    
+    toggleRecentDropdown() {
+        const dropdown = document.getElementById('recentDropdown');
+        if (!dropdown) return;
+        
+        const isVisible = dropdown.style.display !== 'none';
+        dropdown.style.display = isVisible ? 'none' : 'block';
+        
+        if (!isVisible) {
+            this.updateRecentList();
+        }
+    }
+    
+    updateRecentList() {
+        const list = document.getElementById('recentList');
+        const empty = document.getElementById('recentEmpty');
+        if (!list || !empty) return;
+        
+        if (this.recentFiles.length === 0) {
+            list.style.display = 'none';
+            empty.style.display = 'block';
+            return;
+        }
+        
+        list.style.display = 'block';
+        empty.style.display = 'none';
+        
+        list.innerHTML = this.recentFiles.map(f => {
+            const date = new Date(f.date);
+            const dateStr = `${date.getMonth() + 1}/${date.getDate()} ${date.getHours()}:${String(date.getMinutes()).padStart(2, '0')}`;
+            return `
+                <li data-filename="${f.name}">
+                    <i class="fa-solid fa-file-lines"></i>
+                    <span class="recent-name">${f.name}</span>
+                    <span class="recent-date">${dateStr}</span>
+                </li>
+            `;
+        }).join('');
+        
+        // 클릭 이벤트
+        list.querySelectorAll('li').forEach(li => {
+            li.addEventListener('click', () => {
+                const filename = li.dataset.filename;
+                this.openRecentFile(filename);
+                document.getElementById('recentDropdown').style.display = 'none';
+            });
+        });
+    }
+    
+    async openRecentFile(filename) {
+        // File System Access API로 파일 열기 시도
+        // 보안상 직접 파일 경로로 열 수 없으므로, 파일 선택 다이얼로그를 열고 안내
+        this.showToast(`📂 "${filename}" 파일을 선택해주세요`);
+        
+        if (window.showOpenFilePicker) {
+            try {
+                const [fileHandle] = await window.showOpenFilePicker({
+                    types: [{
+                        description: 'LEVELFORGE 파일',
+                        accept: { 'application/json': ['.json'] }
+                    }]
+                });
+                
+                const file = await fileHandle.getFile();
+                const content = await file.text();
+                this._openedFileHandle = fileHandle;
+                this.loadFileContent(content, file.name);
+            } catch (err) {
+                if (err.name !== 'AbortError') {
+                    console.log('파일 열기 취소됨');
+                }
+            }
+        } else {
+            document.getElementById('fileInput').click();
+        }
+    }
+
     // ========== AI ASSISTANT ==========
     toggleAIPanel(show = null) {
         const panel = document.getElementById('aiPanel');
