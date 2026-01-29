@@ -8008,15 +8008,16 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     }
     
     addAIActionButtons(description) {
-        const messages = document.getElementById('aiMessages');
-        if (!messages) return;
+        // 기존 패널 제거
+        document.getElementById('aiFloatingPanel')?.remove();
         
         // 초기 선택: 모두 선택
         this.aiSelectedIndices = new Set(this.aiPendingObjects.map((_, i) => i));
         
-        const actionDiv = document.createElement('div');
-        actionDiv.className = 'ai-message ai-action';
-        actionDiv.id = 'aiActionPanel';
+        // 캔버스 위에 플로팅 패널 생성
+        const panel = document.createElement('div');
+        panel.id = 'aiFloatingPanel';
+        panel.className = 'ai-floating-panel';
         
         // 오브젝트 목록 생성
         let listHtml = this.aiPendingObjects.map((obj, i) => `
@@ -8026,20 +8027,19 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
             </label>
         `).join('');
         
-        actionDiv.innerHTML = `
-            <div style="margin-bottom:8px;">🤖 <strong>${description}</strong></div>
+        panel.innerHTML = `
+            <div class="ai-floating-header">🤖 AI 생성 (${this.aiPendingObjects.length}개)</div>
             <div class="ai-obj-list">${listHtml}</div>
-            <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px;">
-                <span id="aiSelectedCount" style="font-size:11px;color:#888;">${this.aiPendingObjects.length}/${this.aiPendingObjects.length} 선택됨</span>
-                <div style="display:flex;gap:6px;">
-                    <button class="ai-apply-btn" onclick="app.applyAIObjects()">✅ 선택 적용</button>
+            <div class="ai-floating-footer">
+                <span id="aiSelectedCount">${this.aiPendingObjects.length}개 선택</span>
+                <div class="ai-floating-btns">
+                    <button class="ai-apply-btn" onclick="app.applyAIObjects()">✅ 적용</button>
                     <button class="ai-cancel-btn" onclick="app.cancelAIObjects()">❌ 취소</button>
                 </div>
             </div>
         `;
-        messages.appendChild(actionDiv);
-        messages.scrollTop = messages.scrollHeight;
         
+        document.body.appendChild(panel);
         this.showAIPreview();
     }
     
@@ -8078,8 +8078,9 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         this.updateObjectsList();
         this.render();
         this.showToast(`🤖 ${count}개 오브젝트 추가됨`);
+        this.hideAIStatus();
         
-        document.querySelectorAll('.ai-action').forEach(el => el.remove());
+        document.getElementById('aiFloatingPanel')?.remove();
     }
     
     cancelAIObjects() {
@@ -8087,8 +8088,9 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         this.aiSelectedIndices = null;
         this.render();
         this.showToast('AI 제안 취소됨');
+        this.hideAIStatus();
         
-        document.querySelectorAll('.ai-action').forEach(el => el.remove());
+        document.getElementById('aiFloatingPanel')?.remove();
     }
     
     // AI 영역 지정 모드
