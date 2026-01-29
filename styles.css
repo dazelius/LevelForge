@@ -1460,6 +1460,41 @@ body {
     margin-top: 8px;
 }
 
+.ai-message.ai-action {
+    background: linear-gradient(135deg, #4a3d5a, #3d3a5a);
+    border: 1px solid #a29bfe;
+}
+
+.ai-apply-btn, .ai-cancel-btn {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: bold;
+}
+
+.ai-apply-btn {
+    background: #4ecdc4;
+    color: #000;
+}
+
+.ai-apply-btn:hover {
+    background: #5eead4;
+}
+
+.ai-cancel-btn {
+    background: var(--bg-lighter);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.ai-cancel-btn:hover {
+    background: #e74c3c;
+    color: #fff;
+    border-color: #e74c3c;
+}
+
 /* Recent Files Dropdown */
 .recent-dropdown {
     position: absolute;

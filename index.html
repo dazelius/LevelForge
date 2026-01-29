@@ -148,9 +148,13 @@
                 <div id="aiMessages" class="ai-messages"></div>
                 <div class="ai-input-area">
                     <div class="ai-quick-actions">
+                        <button class="ai-quick-btn" data-prompt="기존 바닥들 사이의 빈 공간을 연결하는 통로를 만들어줘. 기존 점들과 정확히 맞닿도록 좌표를 계산해서 polyfloor를 생성해줘.">🔗 통로 연결</button>
+                        <button class="ai-quick-btn" data-prompt="Defence에서 Objective로 가는 새로운 우회 경로를 만들어줘. 기존 바닥과 연결되는 polyfloor를 생성해줘.">🛤️ 우회로 생성</button>
+                        <button class="ai-quick-btn" data-prompt="현재 맵의 빈 공간에 추가 바닥을 생성해서 더 넓은 교전 지역을 만들어줘.">🏗️ 영역 확장</button>
+                    </div>
+                    <div class="ai-quick-actions" style="margin-top:4px;">
                         <button class="ai-quick-btn" data-prompt="현재 레벨을 분석하고 개선점을 알려줘">📊 분석</button>
                         <button class="ai-quick-btn" data-prompt="초크포인트와 사이트라인을 체크해줘">🎯 초크포인트</button>
-                        <button class="ai-quick-btn" data-prompt="밸런스 문제가 있는지 확인해줘">⚖️ 밸런스</button>
                     </div>
                     <div class="ai-input-row">
                         <input type="text" id="aiInput" placeholder="레벨 디자인에 대해 질문하세요..." />

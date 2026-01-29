@@ -7656,24 +7656,117 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         if (jsonMatch) {
             try {
                 const data = JSON.parse(jsonMatch[1]);
-                if (data.objects && Array.isArray(data.objects)) {
-                    // 오브젝트 추가 확인
-                    if (confirm(`AI가 ${data.objects.length}개의 오브젝트를 제안했습니다. 추가할까요?`)) {
-                        data.objects.forEach(obj => {
-                            obj.id = this.nextId++;
-                            obj.floor = this.currentFloor;
-                            this.objects.push(obj);
-                        });
-                        this.saveState();
-                        this.updateObjectsList();
-                        this.render();
-                        this.showToast(`🤖 ${data.objects.length}개 오브젝트 추가됨`);
-                    }
+                if (data.objects && Array.isArray(data.objects) && data.objects.length > 0) {
+                    // AI 생성 오브젝트 미리보기 추가
+                    this.aiPendingObjects = data.objects.map(obj => ({
+                        ...obj,
+                        id: this.nextId++,
+                        floor: obj.floor ?? this.currentFloor,
+                        category: obj.category || 'floors',
+                        color: obj.color || 'hsla(280, 60%, 50%, 0.6)', // AI 생성 = 보라색
+                        closed: obj.closed ?? true,
+                        floorHeight: obj.floorHeight ?? 0
+                    }));
+                    
+                    // 미리보기 렌더링
+                    this.showAIPreview();
+                    
+                    // 확인 버튼 추가
+                    const desc = data.description || `${data.objects.length}개 오브젝트`;
+                    this.addAIActionButtons(desc);
                 }
             } catch (e) {
-                // JSON 파싱 실패 - 무시
+                console.error('AI JSON 파싱 오류:', e);
             }
         }
+    }
+    
+    showAIPreview() {
+        // AI 생성 오브젝트를 임시로 표시
+        if (!this.aiPendingObjects) return;
+        this.render();
+        
+        // 미리보기 오버레이 그리기
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.translate(this.camera.x, this.camera.y);
+        ctx.scale(this.camera.zoom, this.camera.zoom);
+        
+        this.aiPendingObjects.forEach(obj => {
+            if (obj.type === 'polyfloor' && obj.points) {
+                // 미리보기 스타일 (점선, 보라색)
+                ctx.beginPath();
+                ctx.moveTo(obj.points[0].x, obj.points[0].y);
+                obj.points.forEach(p => ctx.lineTo(p.x, p.y));
+                ctx.closePath();
+                
+                ctx.fillStyle = 'rgba(162, 155, 254, 0.3)';
+                ctx.fill();
+                
+                ctx.strokeStyle = '#a29bfe';
+                ctx.lineWidth = 3;
+                ctx.setLineDash([8, 4]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // 레이블
+                if (obj.label) {
+                    const cx = obj.points.reduce((s, p) => s + p.x, 0) / obj.points.length;
+                    const cy = obj.points.reduce((s, p) => s + p.y, 0) / obj.points.length;
+                    ctx.font = 'bold 14px sans-serif';
+                    ctx.fillStyle = '#a29bfe';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`🤖 ${obj.label}`, cx, cy);
+                }
+            }
+        });
+        
+        ctx.restore();
+    }
+    
+    addAIActionButtons(description) {
+        const messages = document.getElementById('aiMessages');
+        if (!messages) return;
+        
+        const actionDiv = document.createElement('div');
+        actionDiv.className = 'ai-message ai-action';
+        actionDiv.innerHTML = `
+            <div style="margin-bottom:8px;">🤖 <strong>${description}</strong></div>
+            <div style="display:flex;gap:8px;">
+                <button class="ai-apply-btn" onclick="app.applyAIObjects()">✅ 적용</button>
+                <button class="ai-cancel-btn" onclick="app.cancelAIObjects()">❌ 취소</button>
+            </div>
+        `;
+        messages.appendChild(actionDiv);
+        messages.scrollTop = messages.scrollHeight;
+    }
+    
+    applyAIObjects() {
+        if (!this.aiPendingObjects || this.aiPendingObjects.length === 0) return;
+        
+        this.aiPendingObjects.forEach(obj => {
+            this.objects.push(obj);
+        });
+        
+        const count = this.aiPendingObjects.length;
+        this.aiPendingObjects = null;
+        
+        this.saveState();
+        this.updateObjectsList();
+        this.render();
+        this.showToast(`🤖 ${count}개 오브젝트 추가됨`);
+        
+        // 액션 버튼 숨기기
+        document.querySelectorAll('.ai-action').forEach(el => el.remove());
+    }
+    
+    cancelAIObjects() {
+        this.aiPendingObjects = null;
+        this.render();
+        this.showToast('AI 제안 취소됨');
+        
+        // 액션 버튼 숨기기
+        document.querySelectorAll('.ai-action').forEach(el => el.remove());
     }
 }
 
