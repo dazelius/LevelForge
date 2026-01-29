@@ -22,20 +22,60 @@ try {
 
 const PORT = 3001;
 
+// JSON 추출 함수
+function extractJSON(text) {
+    // 1. 코드블록 제거
+    let cleaned = text.replace(/```json\n?/gi, '').replace(/```\n?/g, '').trim();
+    
+    // 2. 직접 파싱
+    try {
+        const parsed = JSON.parse(cleaned);
+        if (parsed.objects) return parsed;
+    } catch (e) {}
+    
+    // 3. { 부터 } 까지 중첩 매칭
+    let depth = 0, start = -1, end = -1;
+    for (let i = 0; i < cleaned.length; i++) {
+        if (cleaned[i] === '{') {
+            if (depth === 0) start = i;
+            depth++;
+        } else if (cleaned[i] === '}') {
+            depth--;
+            if (depth === 0 && start >= 0) {
+                end = i + 1;
+                try {
+                    const parsed = JSON.parse(cleaned.substring(start, end));
+                    if (parsed.objects) return parsed;
+                } catch (e) {}
+                start = -1; // 다음 블록 시도
+            }
+        }
+    }
+    
+    // 4. "objects" 배열만 추출
+    const arrMatch = cleaned.match(/"objects"\s*:\s*\[([\s\S]*?)\]/);
+    if (arrMatch) {
+        try {
+            const arr = JSON.parse('[' + arrMatch[1] + ']');
+            return { objects: arr, description: "AI 생성" };
+        } catch (e) {}
+    }
+    
+    return null;
+}
+
 // Claude API 호출
 async function callClaude(prompt, levelData) {
-    const systemPrompt = `당신은 FPS 게임 레벨 디자인 AI입니다. polyfloor 오브젝트를 JSON으로 생성합니다.
+    const systemPrompt = `You are a JSON generator for FPS level design. Output ONLY valid JSON, no text.
 
-## 좌표: 32px = 1m, z는 높이(미터)
+FORMAT (output exactly this structure):
+{"objects":[{"type":"polyfloor","points":[{"x":0,"y":0,"z":0},{"x":128,"y":0,"z":0},{"x":128,"y":128,"z":0},{"x":0,"y":128,"z":0}],"floorHeight":0,"floor":0,"label":"name","closed":true}],"description":"what was created"}
 
-## 반드시 이 형식으로만 응답하세요:
-{"objects":[{"type":"polyfloor","points":[{"x":0,"y":0,"z":0},{"x":128,"y":0,"z":0},{"x":128,"y":128,"z":0},{"x":0,"y":128,"z":0}],"floorHeight":0,"floor":0,"label":"이름","closed":true}],"description":"설명"}
-
-## 규칙:
-- 통로 폭: 128~192px (4~6m)
-- points는 최소 3개, 시계/반시계 순서
-- 기존 바닥 좌표와 정확히 일치시켜 연결
-- 설명이나 마크다운 없이 JSON만 출력`;
+RULES:
+- 32px = 1m
+- Corridor width: 128-192px
+- Match existing vertex coordinates exactly
+- Output ONLY JSON, no explanation, no markdown`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -50,44 +90,30 @@ async function callClaude(prompt, levelData) {
             system: systemPrompt,
             messages: [{
                 role: 'user',
-                content: `레벨 데이터: ${JSON.stringify(levelData)}\n\n요청: ${prompt}\n\n위 형식의 JSON만 응답하세요. 설명 없이 JSON만.`
+                content: `Level: ${JSON.stringify(levelData)}\n\nTask: ${prompt}\n\nRespond with ONLY the JSON object. No other text.`
             }]
         })
     });
 
     if (!response.ok) {
         const error = await response.text();
-        throw new Error(`API 오류: ${response.status} - ${error}`);
+        throw new Error(`API error: ${response.status} - ${error}`);
     }
 
     const data = await response.json();
-    let text = data.content[0].text;
+    const text = data.content[0].text;
     
-    // JSON 추출 시도
-    try {
-        // 코드블록 제거
-        text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
-        // 앞뒤 공백/줄바꿈 제거
-        text = text.trim();
-        // JSON 파싱 테스트
-        const parsed = JSON.parse(text);
-        if (parsed.objects && Array.isArray(parsed.objects)) {
-            return JSON.stringify(parsed); // 깨끗한 JSON 반환
-        }
-    } catch (e) {
-        // JSON 블록 찾기
-        const match = text.match(/\{[\s\S]*"objects"[\s\S]*\}/);
-        if (match) {
-            try {
-                const parsed = JSON.parse(match[0]);
-                if (parsed.objects) {
-                    return JSON.stringify(parsed);
-                }
-            } catch (e2) {}
-        }
+    console.log('📥 AI 원본 응답:', text.substring(0, 200) + '...');
+    
+    // JSON 추출
+    const extracted = extractJSON(text);
+    if (extracted && extracted.objects && extracted.objects.length > 0) {
+        console.log('✅ JSON 추출 성공:', extracted.objects.length, '개 오브젝트');
+        return JSON.stringify(extracted);
     }
     
-    return text; // 원본 반환
+    console.log('⚠️ JSON 추출 실패, 원본 반환');
+    return text;
 }
 
 // HTTP 서버
