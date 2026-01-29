@@ -24,59 +24,18 @@ const PORT = 3001;
 
 // Claude API 호출
 async function callClaude(prompt, levelData) {
-    const systemPrompt = `당신은 FPS 게임 레벨 디자인 전문가이자 레벨 에디터입니다. 사용자의 요청에 따라 실제로 맵을 수정합니다.
+    const systemPrompt = `당신은 FPS 게임 레벨 디자인 AI입니다. polyfloor 오브젝트를 JSON으로 생성합니다.
 
-## 좌표 시스템
-- 1 그리드 = 32px = 1m
-- x: 오른쪽이 양수, y: 아래쪽이 양수
-- z (높이): 미터 단위, 0이 기본
+## 좌표: 32px = 1m, z는 높이(미터)
 
-## 오브젝트 구조
-polyfloor (바닥):
-{
-  "type": "polyfloor",
-  "points": [{"x": 0, "y": 0, "z": 0}, {"x": 160, "y": 0, "z": 0}, ...],
-  "floorHeight": 0,
-  "floor": 0,
-  "label": "통로A",
-  "category": "floors",
-  "color": "hsla(200, 60%, 40%, 0.6)",
-  "closed": true
-}
+## 반드시 이 형식으로만 응답하세요:
+{"objects":[{"type":"polyfloor","points":[{"x":0,"y":0,"z":0},{"x":128,"y":0,"z":0},{"x":128,"y":128,"z":0},{"x":0,"y":128,"z":0}],"floorHeight":0,"floor":0,"label":"이름","closed":true}],"description":"설명"}
 
-## 중요 규칙
-1. 통로 너비: 최소 4m(128px) ~ 6m(192px)
-2. 기존 바닥과 연결 시: 기존 점(vertex)과 정확히 일치하도록 좌표 맞추기
-3. 다각형은 시계방향 또는 반시계방향으로 점 배열
-4. 접합부는 공유하는 변(edge)의 점들이 정확히 일치해야 함
-
-## 레벨 디자인 원칙
-- 3초 룰: 15m마다 방향 전환 가능
-- 다양한 루트: 최소 2개 이상의 경로
-- 초크포인트: 양 팀이 만나는 교전 지점
-
-## 응답 형식
-반드시 다음 JSON 형식으로 새로 생성할 오브젝트를 제공하세요:
-
-\`\`\`json
-{
-  "objects": [
-    {
-      "type": "polyfloor",
-      "points": [...],
-      "floorHeight": 0,
-      "floor": 0,
-      "label": "이름",
-      "category": "floors",
-      "color": "hsla(200, 60%, 40%, 0.6)",
-      "closed": true
-    }
-  ],
-  "description": "무엇을 만들었는지 설명"
-}
-\`\`\`
-
-기존 바닥들과 자연스럽게 연결되도록 좌표를 계산하세요.`;
+## 규칙:
+- 통로 폭: 128~192px (4~6m)
+- points는 최소 3개, 시계/반시계 순서
+- 기존 바닥 좌표와 정확히 일치시켜 연결
+- 설명이나 마크다운 없이 JSON만 출력`;
 
     const response = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -91,7 +50,7 @@ polyfloor (바닥):
             system: systemPrompt,
             messages: [{
                 role: 'user',
-                content: `현재 레벨 데이터:\n${JSON.stringify(levelData, null, 2)}\n\n요청: ${prompt}`
+                content: `레벨 데이터: ${JSON.stringify(levelData)}\n\n요청: ${prompt}\n\n위 형식의 JSON만 응답하세요. 설명 없이 JSON만.`
             }]
         })
     });
@@ -102,7 +61,33 @@ polyfloor (바닥):
     }
 
     const data = await response.json();
-    return data.content[0].text;
+    let text = data.content[0].text;
+    
+    // JSON 추출 시도
+    try {
+        // 코드블록 제거
+        text = text.replace(/```json\n?/g, '').replace(/```\n?/g, '');
+        // 앞뒤 공백/줄바꿈 제거
+        text = text.trim();
+        // JSON 파싱 테스트
+        const parsed = JSON.parse(text);
+        if (parsed.objects && Array.isArray(parsed.objects)) {
+            return JSON.stringify(parsed); // 깨끗한 JSON 반환
+        }
+    } catch (e) {
+        // JSON 블록 찾기
+        const match = text.match(/\{[\s\S]*"objects"[\s\S]*\}/);
+        if (match) {
+            try {
+                const parsed = JSON.parse(match[0]);
+                if (parsed.objects) {
+                    return JSON.stringify(parsed);
+                }
+            } catch (e2) {}
+        }
+    }
+    
+    return text; // 원본 반환
 }
 
 // HTTP 서버

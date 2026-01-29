@@ -7764,27 +7764,56 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     }
     
     parseAIResponse(response, retryCount = 0) {
-        // 여러 형태의 JSON 추출 시도
         let jsonData = null;
         let parseError = null;
         
-        // 1. ```json 블록
-        const jsonMatch = response.match(/```json\n?([\s\S]*?)```/);
-        if (jsonMatch) {
-            try {
-                jsonData = JSON.parse(jsonMatch[1]);
-            } catch (e) {
-                parseError = e;
+        // 전처리: 코드블록 마커 제거
+        let cleaned = response
+            .replace(/```json\n?/gi, '')
+            .replace(/```\n?/g, '')
+            .trim();
+        
+        // 1. 직접 파싱 시도
+        try {
+            jsonData = JSON.parse(cleaned);
+        } catch (e) {
+            parseError = e;
+        }
+        
+        // 2. { ... } 추출 후 파싱
+        if (!jsonData) {
+            // 중첩된 {} 처리를 위한 간단한 매칭
+            let depth = 0;
+            let start = -1;
+            let end = -1;
+            for (let i = 0; i < cleaned.length; i++) {
+                if (cleaned[i] === '{') {
+                    if (depth === 0) start = i;
+                    depth++;
+                } else if (cleaned[i] === '}') {
+                    depth--;
+                    if (depth === 0) {
+                        end = i + 1;
+                        break;
+                    }
+                }
+            }
+            if (start >= 0 && end > start) {
+                try {
+                    jsonData = JSON.parse(cleaned.substring(start, end));
+                } catch (e) {
+                    parseError = e;
+                }
             }
         }
         
-        // 2. 직접 배열 형태 [ ... ]
-        if (!jsonData) {
-            const arrayMatch = response.match(/\[\s*\{[\s\S]*?\}\s*\]/);
-            if (arrayMatch) {
+        // 3. objects 배열 직접 추출
+        if (!jsonData || !jsonData.objects) {
+            const arrMatch = cleaned.match(/"objects"\s*:\s*(\[[\s\S]*?\])/);
+            if (arrMatch) {
                 try {
-                    const arr = JSON.parse(arrayMatch[0]);
-                    if (Array.isArray(arr) && arr.length > 0) {
+                    const arr = JSON.parse(arrMatch[1]);
+                    if (Array.isArray(arr)) {
                         jsonData = { objects: arr };
                     }
                 } catch (e) {
@@ -7793,17 +7822,7 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
             }
         }
         
-        // 3. { "objects": [...] } 형태
-        if (!jsonData) {
-            const objMatch = response.match(/\{\s*"objects"\s*:\s*\[[\s\S]*?\]\s*\}/);
-            if (objMatch) {
-                try {
-                    jsonData = JSON.parse(objMatch[0]);
-                } catch (e) {
-                    parseError = e;
-                }
-            }
-        }
+        console.log('AI 응답 파싱:', jsonData ? `${jsonData.objects?.length || 0}개 오브젝트` : '실패');
         
         // 파싱 성공
         if (jsonData && jsonData.objects && Array.isArray(jsonData.objects) && jsonData.objects.length > 0) {
