@@ -1531,6 +1531,34 @@ body {
     background: linear-gradient(135deg, #e67e22, #d35400) !important;
 }
 
+/* AI 상태 메시지 */
+.ai-status {
+    padding: 6px 10px;
+    border-radius: 6px;
+    font-size: 11px;
+    font-weight: bold;
+    text-align: center;
+    margin: 4px 0;
+}
+
+.ai-status-success {
+    background: rgba(78, 205, 196, 0.2);
+    color: #4ecdc4;
+    border: 1px solid #4ecdc4;
+}
+
+.ai-status-warning {
+    background: rgba(255, 193, 7, 0.2);
+    color: #ffc107;
+    border: 1px solid #ffc107;
+}
+
+.ai-status-error {
+    background: rgba(231, 76, 60, 0.2);
+    color: #e74c3c;
+    border: 1px solid #e74c3c;
+}
+
 /* Recent Files Dropdown */
 .recent-dropdown {
     position: absolute;

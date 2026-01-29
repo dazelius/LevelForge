@@ -7619,6 +7619,9 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         
         if (!prompt) return;
         
+        // 재시도를 위해 저장
+        this.lastAIPrompt = prompt;
+        
         // 사용자 메시지 추가
         this.addAIMessage(prompt, 'user');
         input.value = '';
@@ -7676,34 +7679,134 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         return msg;
     }
     
-    parseAIResponse(response) {
-        // JSON 블록 찾기
+    parseAIResponse(response, retryCount = 0) {
+        // 여러 형태의 JSON 추출 시도
+        let jsonData = null;
+        let parseError = null;
+        
+        // 1. ```json 블록
         const jsonMatch = response.match(/```json\n?([\s\S]*?)```/);
         if (jsonMatch) {
             try {
-                const data = JSON.parse(jsonMatch[1]);
-                if (data.objects && Array.isArray(data.objects) && data.objects.length > 0) {
-                    // AI 생성 오브젝트 미리보기 추가
-                    this.aiPendingObjects = data.objects.map(obj => ({
-                        ...obj,
-                        id: this.nextId++,
-                        floor: obj.floor ?? this.currentFloor,
-                        category: obj.category || 'floors',
-                        color: obj.color || 'hsla(280, 60%, 50%, 0.6)', // AI 생성 = 보라색
-                        closed: obj.closed ?? true,
-                        floorHeight: obj.floorHeight ?? 0
-                    }));
-                    
-                    // 미리보기 렌더링
-                    this.showAIPreview();
-                    
-                    // 확인 버튼 추가
-                    const desc = data.description || `${data.objects.length}개 오브젝트`;
-                    this.addAIActionButtons(desc);
-                }
+                jsonData = JSON.parse(jsonMatch[1]);
             } catch (e) {
-                console.error('AI JSON 파싱 오류:', e);
+                parseError = e;
             }
+        }
+        
+        // 2. 직접 배열 형태 [ ... ]
+        if (!jsonData) {
+            const arrayMatch = response.match(/\[\s*\{[\s\S]*?\}\s*\]/);
+            if (arrayMatch) {
+                try {
+                    const arr = JSON.parse(arrayMatch[0]);
+                    if (Array.isArray(arr) && arr.length > 0) {
+                        jsonData = { objects: arr };
+                    }
+                } catch (e) {
+                    parseError = e;
+                }
+            }
+        }
+        
+        // 3. { "objects": [...] } 형태
+        if (!jsonData) {
+            const objMatch = response.match(/\{\s*"objects"\s*:\s*\[[\s\S]*?\]\s*\}/);
+            if (objMatch) {
+                try {
+                    jsonData = JSON.parse(objMatch[0]);
+                } catch (e) {
+                    parseError = e;
+                }
+            }
+        }
+        
+        // 파싱 성공
+        if (jsonData && jsonData.objects && Array.isArray(jsonData.objects) && jsonData.objects.length > 0) {
+            // AI 생성 오브젝트 미리보기 추가
+            this.aiPendingObjects = jsonData.objects.map(obj => ({
+                ...obj,
+                id: this.nextId++,
+                floor: obj.floor ?? this.currentFloor,
+                category: obj.category || 'floors',
+                color: obj.color || 'hsla(280, 60%, 50%, 0.6)',
+                closed: obj.closed ?? true,
+                floorHeight: obj.floorHeight ?? 0
+            }));
+            
+            // 미리보기 렌더링
+            this.showAIPreview();
+            
+            // 성공 메시지 + 확인 버튼
+            const desc = jsonData.description || `${jsonData.objects.length}개 오브젝트`;
+            this.addAIActionButtons(desc);
+            this.addAIStatusMessage('success', `✅ OK - ${jsonData.objects.length}개 오브젝트 파싱 성공`);
+            return true;
+        }
+        
+        // 파싱 실패 - 재시도 (최대 1회)
+        if (parseError && retryCount < 1) {
+            console.warn('AI JSON 파싱 실패, 재시도 중...', parseError);
+            this.addAIStatusMessage('warning', '⚠️ 파싱 실패, 재시도 중...');
+            
+            // 마지막 프롬프트로 재시도
+            if (this.lastAIPrompt) {
+                setTimeout(() => {
+                    this.retryAIRequest(retryCount + 1);
+                }, 1000);
+            }
+            return false;
+        }
+        
+        // 최종 실패
+        if (parseError) {
+            this.addAIStatusMessage('error', '❌ JSON 파싱 실패 - 다시 시도해주세요');
+            console.error('AI JSON 파싱 최종 실패:', parseError);
+        }
+        
+        return false;
+    }
+    
+    addAIStatusMessage(type, text) {
+        const messages = document.getElementById('aiMessages');
+        if (!messages) return;
+        
+        const status = document.createElement('div');
+        status.className = `ai-status ai-status-${type}`;
+        status.textContent = text;
+        messages.appendChild(status);
+        messages.scrollTop = messages.scrollHeight;
+        
+        // 성공/경고는 3초 후 자동 제거
+        if (type !== 'error') {
+            setTimeout(() => status.remove(), 3000);
+        }
+    }
+    
+    async retryAIRequest(retryCount) {
+        if (!this.lastAIPrompt) return;
+        
+        try {
+            const response = await fetch('http://localhost:3001/ai/chat', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    prompt: this.lastAIPrompt + '\n\n(이전 응답이 파싱에 실패했습니다. JSON 형식을 정확하게 지켜주세요.)',
+                    levelData: {
+                        levelName: this.levelName,
+                        objects: this.objects,
+                        gridSize: this.gridSize
+                    }
+                })
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                this.parseAIResponse(data.response, retryCount);
+            }
+        } catch (err) {
+            console.error('AI 재시도 실패:', err);
+            this.addAIStatusMessage('error', '❌ 재시도 실패');
         }
     }
     
