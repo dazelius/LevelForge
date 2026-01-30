@@ -145,17 +145,20 @@
                     <span><i class="fa-solid fa-robot"></i> AI Level Designer</span>
                     <button id="aiCloseBtn" class="ai-close-btn"><i class="fa-solid fa-times"></i></button>
                 </div>
-                <!-- AI 자동 생성 버튼 -->
+                <!-- 프로시저럴 자동 생성 버튼 -->
                 <div class="ai-auto-section">
-                    <button class="ai-auto-btn" onclick="app.aiAutoGenerate('connect')">
+                    <button class="ai-auto-btn" onclick="app.proceduralConnect()">
                         <i class="fa-solid fa-link"></i> 통로 자동 연결
                     </button>
-                    <button class="ai-auto-btn" onclick="app.aiAutoGenerate('expand')">
+                    <button class="ai-auto-btn" onclick="app.proceduralExpand()">
                         <i class="fa-solid fa-expand"></i> 영역 확장
                     </button>
                     <button class="ai-auto-btn ai-area-btn" onclick="app.startAIAreaSelection()">
-                        <i class="fa-solid fa-vector-square"></i> 영역 지정 생성
+                        <i class="fa-solid fa-vector-square"></i> 영역 지정
                     </button>
+                </div>
+                <div class="procedural-options">
+                    <label>통로 폭: <input type="number" id="corridorWidth" value="5" min="3" max="8" style="width:50px">m</label>
                 </div>
                 
                 <div class="ai-status-bar" id="aiStatusBar" style="display:none;">

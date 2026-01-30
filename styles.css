@@ -1598,6 +1598,25 @@ body {
     background: linear-gradient(135deg, #e67e22, #d35400);
 }
 
+.procedural-options {
+    display: flex;
+    gap: 10px;
+    padding: 8px 12px;
+    background: var(--bg-darker);
+    border-radius: 6px;
+    font-size: 12px;
+    color: var(--text-dim);
+}
+
+.procedural-options input {
+    background: var(--bg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    color: var(--text);
+    padding: 2px 4px;
+    text-align: center;
+}
+
 .ai-auto-btn i {
     font-size: 14px;
 }
