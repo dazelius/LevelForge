@@ -7780,64 +7780,371 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     
     // ========== 프로시저럴 레벨 생성 ==========
     
-    proceduralConnect() {
-        const width = (parseInt(document.getElementById('corridorWidth')?.value) || 5) * 32;
+    // Step 1: 스폰/Objective 위치 파악 및 포함 바닥 찾기
+    findSpawnsAndObjective() {
+        const defence = this.objects.find(o => o.type === 'spawn-def');
+        const offence = this.objects.find(o => o.type === 'spawn-off');
+        const objective = this.objects.find(o => o.type === 'objective');
+        return { defence, offence, objective };
+    }
+    
+    findFloorContainingPoint(x, y) {
         const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
+        return floors.find(floor => this.isPointInPolygon(x, y, floor.points));
+    }
+    
+    findFloorNearPoint(x, y, maxDist = 200) {
+        const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
+        let closest = null;
+        let minDist = maxDist;
         
-        if (floors.length < 2) {
-            this.showToast('연결할 바닥이 2개 이상 필요합니다');
-            return;
-        }
-        
-        // 1. 연결 그래프 만들기 (어떤 바닥이 어떤 바닥과 맞닿아 있는지)
-        const connected = new Set();
-        floors.forEach((f1, i) => {
-            floors.forEach((f2, j) => {
-                if (i >= j) return;
-                if (this.areFloorsConnected(f1, f2)) {
-                    connected.add(`${f1.id}-${f2.id}`);
-                    connected.add(`${f2.id}-${f1.id}`);
-                }
-            });
+        floors.forEach(floor => {
+            // 바닥의 중심점과의 거리
+            const cx = floor.points.reduce((s, p) => s + p.x, 0) / floor.points.length;
+            const cy = floor.points.reduce((s, p) => s + p.y, 0) / floor.points.length;
+            const dist = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+            
+            if (dist < minDist) {
+                minDist = dist;
+                closest = floor;
+            }
         });
         
-        // 2. 연결 안 된 바닥 쌍 중 가장 가까운 것들 찾기
-        const gaps = [];
-        floors.forEach((f1, i) => {
-            floors.forEach((f2, j) => {
-                if (i >= j) return;
-                if (connected.has(`${f1.id}-${f2.id}`)) return;  // 이미 연결됨
+        return closest;
+    }
+    
+    // Step 2: 바닥 연결 그래프 생성 (vertex 공유 기반)
+    buildConnectionGraph() {
+        const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
+        const graph = new Map();  // floorId -> Set of connected floorIds
+        
+        floors.forEach(floor => {
+            graph.set(floor.id, new Set());
+        });
+        
+        // 두 바닥이 vertex를 공유하면 연결
+        const tolerance = 4;  // 4px 이내면 같은 점으로 간주
+        
+        for (let i = 0; i < floors.length; i++) {
+            for (let j = i + 1; j < floors.length; j++) {
+                const f1 = floors[i];
+                const f2 = floors[j];
                 
-                // 두 바닥 사이 최단 거리와 연결점 찾기
-                const connection = this.findBestConnection(f1, f2, width);
-                if (connection && connection.distance < 20 * 32) {  // 20m 이내만
-                    gaps.push({ f1, f2, ...connection });
+                // vertex 공유 체크
+                let connected = false;
+                for (const p1 of f1.points) {
+                    for (const p2 of f2.points) {
+                        const dist = Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
+                        if (dist <= tolerance) {
+                            connected = true;
+                            break;
+                        }
+                    }
+                    if (connected) break;
                 }
-            });
-        });
-        
-        // 거리순 정렬
-        gaps.sort((a, b) => a.distance - b.distance);
-        
-        // 3. 통로 생성 (최대 5개)
-        const corridors = [];
-        const usedPairs = new Set();
-        
-        for (const gap of gaps) {
-            if (corridors.length >= 5) break;
-            
-            const key = [gap.f1.id, gap.f2.id].sort().join('-');
-            if (usedPairs.has(key)) continue;
-            usedPairs.add(key);
-            
-            const corridor = this.createSimpleCorridor(gap, width, corridors.length);
-            if (corridor && !this.isOverlappingExisting(corridor)) {
-                corridors.push(corridor);
+                
+                if (connected) {
+                    graph.get(f1.id).add(f2.id);
+                    graph.get(f2.id).add(f1.id);
+                }
             }
         }
         
+        return graph;
+    }
+    
+    // Step 3: BFS 경로 탐색
+    bfsPath(startFloor, endFloor, graph) {
+        if (!startFloor || !endFloor) return null;
+        if (startFloor.id === endFloor.id) return [startFloor];
+        
+        const visited = new Set();
+        const queue = [[startFloor.id]];  // path 배열
+        
+        while (queue.length > 0) {
+            const path = queue.shift();
+            const current = path[path.length - 1];
+            
+            if (current === endFloor.id) {
+                // floor 객체로 변환
+                return path.map(id => this.objects.find(o => o.id === id));
+            }
+            
+            if (visited.has(current)) continue;
+            visited.add(current);
+            
+            const neighbors = graph.get(current) || new Set();
+            for (const neighborId of neighbors) {
+                if (!visited.has(neighborId)) {
+                    queue.push([...path, neighborId]);
+                }
+            }
+        }
+        
+        return null;  // 경로 없음
+    }
+    
+    // BFS로 도달 가능한 모든 바닥 찾기
+    bfsReachable(startFloor, graph) {
+        if (!startFloor) return new Set();
+        
+        const reachable = new Set();
+        const queue = [startFloor.id];
+        
+        while (queue.length > 0) {
+            const current = queue.shift();
+            if (reachable.has(current)) continue;
+            reachable.add(current);
+            
+            const neighbors = graph.get(current) || new Set();
+            for (const neighborId of neighbors) {
+                if (!reachable.has(neighborId)) {
+                    queue.push(neighborId);
+                }
+            }
+        }
+        
+        return reachable;
+    }
+    
+    // Step 4: 끊긴 지점 찾기
+    findGapBetweenSets(setA, setB, graph) {
+        const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
+        const floorsA = floors.filter(f => setA.has(f.id));
+        const floorsB = floors.filter(f => setB.has(f.id));
+        
+        let bestGap = null;
+        let minDist = Infinity;
+        
+        // A의 각 바닥과 B의 각 바닥 사이 최단 거리 찾기
+        for (const fa of floorsA) {
+            for (const fb of floorsB) {
+                // 두 바닥의 edge 쌍 중 가장 가까운 것
+                const gap = this.findClosestEdgePair(fa, fb);
+                if (gap && gap.distance < minDist) {
+                    minDist = gap.distance;
+                    bestGap = gap;
+                }
+            }
+        }
+        
+        return bestGap;
+    }
+    
+    findClosestEdgePair(floor1, floor2) {
+        let bestDist = Infinity;
+        let best = null;
+        
+        const pts1 = floor1.points;
+        const pts2 = floor2.points;
+        
+        // floor1의 각 edge
+        for (let i = 0; i < pts1.length; i++) {
+            const e1p1 = pts1[i];
+            const e1p2 = pts1[(i + 1) % pts1.length];
+            
+            // floor2의 각 edge
+            for (let j = 0; j < pts2.length; j++) {
+                const e2p1 = pts2[j];
+                const e2p2 = pts2[(j + 1) % pts2.length];
+                
+                // edge 중점 간 거리
+                const mid1 = { x: (e1p1.x + e1p2.x) / 2, y: (e1p1.y + e1p2.y) / 2 };
+                const mid2 = { x: (e2p1.x + e2p2.x) / 2, y: (e2p1.y + e2p2.y) / 2 };
+                const dist = Math.sqrt((mid1.x - mid2.x) ** 2 + (mid1.y - mid2.y) ** 2);
+                
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    best = {
+                        floor1, floor2,
+                        edge1: { p1: e1p1, p2: e1p2, mid: mid1 },
+                        edge2: { p1: e2p1, p2: e2p2, mid: mid2 },
+                        distance: dist
+                    };
+                }
+            }
+        }
+        
+        return best;
+    }
+    
+    // Step 5: 기존 vertex를 정확히 사용하는 통로 생성
+    createCorridorOnVertices(gap, width) {
+        const { edge1, edge2 } = gap;
+        const halfW = width / 2;
+        
+        // edge1과 edge2의 방향 분석
+        const isE1Vertical = Math.abs(edge1.p2.x - edge1.p1.x) < Math.abs(edge1.p2.y - edge1.p1.y);
+        const isE2Vertical = Math.abs(edge2.p2.x - edge2.p1.x) < Math.abs(edge2.p2.y - edge2.p1.y);
+        
+        // 통로 너비에 맞게 기존 vertex에서 점 선택
+        let p1, p2, p3, p4;
+        
+        if (isE1Vertical && isE2Vertical) {
+            // 둘 다 수직 edge → 수평 통로
+            // Y 범위 겹침 찾기
+            const y1Range = [Math.min(edge1.p1.y, edge1.p2.y), Math.max(edge1.p1.y, edge1.p2.y)];
+            const y2Range = [Math.min(edge2.p1.y, edge2.p2.y), Math.max(edge2.p1.y, edge2.p2.y)];
+            
+            const yStart = Math.max(y1Range[0], y2Range[0]);
+            const yEnd = Math.min(y1Range[1], y2Range[1]);
+            
+            if (yEnd - yStart < width) {
+                // 겹침 불충분 → 중심 사용
+                const yCenter = (yStart + yEnd) / 2;
+                const x1 = edge1.p1.x;
+                const x2 = edge2.p1.x;
+                
+                p1 = { x: x1, y: yCenter - halfW, z: 0 };
+                p2 = { x: x2, y: yCenter - halfW, z: 0 };
+                p3 = { x: x2, y: yCenter + halfW, z: 0 };
+                p4 = { x: x1, y: yCenter + halfW, z: 0 };
+            } else {
+                // 겹침 충분 → 기존 좌표 활용
+                const yMid = (yStart + yEnd) / 2;
+                const x1 = edge1.p1.x;
+                const x2 = edge2.p1.x;
+                
+                p1 = { x: x1, y: yMid - halfW, z: 0 };
+                p2 = { x: x2, y: yMid - halfW, z: 0 };
+                p3 = { x: x2, y: yMid + halfW, z: 0 };
+                p4 = { x: x1, y: yMid + halfW, z: 0 };
+            }
+        } else if (!isE1Vertical && !isE2Vertical) {
+            // 둘 다 수평 edge → 수직 통로
+            const x1Range = [Math.min(edge1.p1.x, edge1.p2.x), Math.max(edge1.p1.x, edge1.p2.x)];
+            const x2Range = [Math.min(edge2.p1.x, edge2.p2.x), Math.max(edge2.p1.x, edge2.p2.x)];
+            
+            const xStart = Math.max(x1Range[0], x2Range[0]);
+            const xEnd = Math.min(x1Range[1], x2Range[1]);
+            
+            const xMid = (xStart + xEnd) / 2;
+            const y1 = edge1.p1.y;
+            const y2 = edge2.p1.y;
+            
+            p1 = { x: xMid - halfW, y: y1, z: 0 };
+            p2 = { x: xMid + halfW, y: y1, z: 0 };
+            p3 = { x: xMid + halfW, y: y2, z: 0 };
+            p4 = { x: xMid - halfW, y: y2, z: 0 };
+        } else {
+            // 다른 방향 → 대각선 또는 L자 통로
+            const x1 = edge1.mid.x;
+            const y1 = edge1.mid.y;
+            const x2 = edge2.mid.x;
+            const y2 = edge2.mid.y;
+            
+            // 간단한 직선 통로
+            const dx = x2 - x1;
+            const dy = y2 - y1;
+            const len = Math.sqrt(dx * dx + dy * dy);
+            const nx = -dy / len * halfW;
+            const ny = dx / len * halfW;
+            
+            p1 = { x: x1 + nx, y: y1 + ny, z: 0 };
+            p2 = { x: x2 + nx, y: y2 + ny, z: 0 };
+            p3 = { x: x2 - nx, y: y2 - ny, z: 0 };
+            p4 = { x: x1 - nx, y: y1 - ny, z: 0 };
+        }
+        
+        return {
+            id: this.nextId++,
+            type: 'polyfloor',
+            category: 'floors',
+            floor: this.currentFloor,
+            color: 'hsla(200, 55%, 50%, 0.6)',
+            points: [p1, p2, p3, p4],
+            floorHeight: 0,
+            closed: true,
+            label: 'Corridor'
+        };
+    }
+    
+    // 메인 함수: 프로시저럴 연결
+    proceduralConnect() {
+        const width = (parseInt(document.getElementById('corridorWidth')?.value) || 5) * 32;
+        
+        // 1. 스폰/Objective 찾기
+        const { defence, offence, objective } = this.findSpawnsAndObjective();
+        
+        if (!objective) {
+            this.showToast('Objective가 없습니다. 먼저 배치해주세요.');
+            return;
+        }
+        
+        // Objective 중심점
+        const objX = objective.x + (objective.width || 512) / 2;
+        const objY = objective.y + (objective.height || 512) / 2;
+        
+        // 2. 각 지점이 포함된 바닥 찾기
+        const defFloor = defence ? 
+            (this.findFloorContainingPoint(defence.x + 160, defence.y + 160) || 
+             this.findFloorNearPoint(defence.x + 160, defence.y + 160)) : null;
+        const offFloor = offence ? 
+            (this.findFloorContainingPoint(offence.x + 160, offence.y + 160) || 
+             this.findFloorNearPoint(offence.x + 160, offence.y + 160)) : null;
+        const objFloor = this.findFloorContainingPoint(objX, objY) || 
+                         this.findFloorNearPoint(objX, objY);
+        
+        // 3. 연결 그래프 생성
+        const graph = this.buildConnectionGraph();
+        
+        // 4. 경로 체크 및 끊긴 지점에 통로 생성
+        const corridors = [];
+        
+        // Defence → Objective 경로
+        if (defFloor && objFloor) {
+            let path = this.bfsPath(defFloor, objFloor, graph);
+            
+            if (!path) {
+                // 경로 없음 → 끊긴 지점 찾기
+                const reachableFromDef = this.bfsReachable(defFloor, graph);
+                const reachableFromObj = this.bfsReachable(objFloor, graph);
+                
+                const gap = this.findGapBetweenSets(reachableFromDef, reachableFromObj, graph);
+                
+                if (gap && gap.distance < 30 * 32) {  // 30m 이내
+                    const corridor = this.createCorridorOnVertices(gap, width);
+                    if (corridor) {
+                        corridors.push(corridor);
+                        this.showToast(`Defence→Objective 연결 통로 생성 (${Math.round(gap.distance / 32)}m)`);
+                    }
+                } else {
+                    this.showToast('Defence→Objective 경로 너무 멀어서 연결 불가');
+                }
+            } else {
+                this.showToast('Defence→Objective 이미 연결됨');
+            }
+        }
+        
+        // Offence → Objective 경로
+        if (offFloor && objFloor) {
+            // 이미 생성된 통로를 임시로 추가하여 그래프 갱신
+            const tempGraph = this.buildConnectionGraph();
+            
+            // 기존 통로로 연결되었는지 확인
+            let path = this.bfsPath(offFloor, objFloor, tempGraph);
+            
+            if (!path) {
+                const reachableFromOff = this.bfsReachable(offFloor, tempGraph);
+                const reachableFromObj = this.bfsReachable(objFloor, tempGraph);
+                
+                const gap = this.findGapBetweenSets(reachableFromOff, reachableFromObj, tempGraph);
+                
+                if (gap && gap.distance < 30 * 32) {
+                    const corridor = this.createCorridorOnVertices(gap, width);
+                    if (corridor) {
+                        corridors.push(corridor);
+                        this.showToast(`Offence→Objective 연결 통로 생성 (${Math.round(gap.distance / 32)}m)`);
+                    }
+                }
+            } else {
+                this.showToast('Offence→Objective 이미 연결됨');
+            }
+        }
+        
+        // 5. 결과 표시
         if (corridors.length === 0) {
-            this.showToast('연결할 빈 공간이 없습니다 (바닥들이 이미 연결되어 있거나 너무 멀리 떨어져 있음)');
+            this.updateAIStatus('모든 경로가 이미 연결되어 있거나 연결 불가', 'warning');
             return;
         }
         
@@ -7848,295 +8155,8 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         this.render();
     }
     
-    // 두 바닥이 맞닿아 있는지 체크 (edge 공유)
-    areFloorsConnected(f1, f2) {
-        const threshold = 8;  // 8px 이내면 연결로 간주
-        
-        for (const p1 of f1.points) {
-            for (const p2 of f2.points) {
-                const dist = Math.sqrt((p1.x - p2.x) ** 2 + (p1.y - p2.y) ** 2);
-                if (dist < threshold) return true;
-            }
-        }
-        return false;
-    }
-    
-    // 두 바닥 사이 최적 연결점 찾기
-    findBestConnection(f1, f2, corridorWidth) {
-        let bestDist = Infinity;
-        let best = null;
-        
-        // f1의 각 edge 중점에서 f2의 각 edge 중점까지 거리 체크
-        const edges1 = this.getEdgesFromFloor(f1);
-        const edges2 = this.getEdgesFromFloor(f2);
-        
-        for (const e1 of edges1) {
-            for (const e2 of edges2) {
-                const dist = Math.sqrt((e1.mid.x - e2.mid.x) ** 2 + (e1.mid.y - e2.mid.y) ** 2);
-                
-                // edge가 서로 마주보는지 체크
-                const isFacing = this.areEdgesFacing(e1, e2);
-                
-                if (dist < bestDist && isFacing) {
-                    bestDist = dist;
-                    best = {
-                        distance: dist,
-                        edge1: e1,
-                        edge2: e2
-                    };
-                }
-            }
-        }
-        
-        return best;
-    }
-    
-    getEdgesFromFloor(floor) {
-        const edges = [];
-        const pts = floor.points;
-        
-        for (let i = 0; i < pts.length; i++) {
-            const p1 = pts[i];
-            const p2 = pts[(i + 1) % pts.length];
-            const dx = p2.x - p1.x;
-            const dy = p2.y - p1.y;
-            const length = Math.sqrt(dx * dx + dy * dy);
-            
-            if (length < 64) continue;  // 2m 미만 edge 무시
-            
-            // edge의 법선 방향 (바깥쪽)
-            const nx = -dy / length;
-            const ny = dx / length;
-            
-            edges.push({
-                p1: { x: p1.x, y: p1.y },
-                p2: { x: p2.x, y: p2.y },
-                mid: { x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 },
-                normal: { x: nx, y: ny },
-                length
-            });
-        }
-        
-        return edges;
-    }
-    
-    areEdgesFacing(e1, e2) {
-        // e1에서 e2로 가는 방향
-        const dx = e2.mid.x - e1.mid.x;
-        const dy = e2.mid.y - e1.mid.y;
-        const dist = Math.sqrt(dx * dx + dy * dy);
-        if (dist === 0) return false;
-        
-        const dirX = dx / dist;
-        const dirY = dy / dist;
-        
-        // e1의 법선이 e2를 향하고, e2의 법선이 e1을 향해야 함
-        const dot1 = e1.normal.x * dirX + e1.normal.y * dirY;
-        const dot2 = e2.normal.x * (-dirX) + e2.normal.y * (-dirY);
-        
-        return dot1 > 0.3 && dot2 > 0.3;  // 대략 마주봄
-    }
-    
-    createSimpleCorridor(gap, width, idx) {
-        const { edge1, edge2 } = gap;
-        const halfW = width / 2;
-        
-        // 두 edge의 겹치는 구간 찾기
-        const overlap = this.findEdgeOverlap(edge1, edge2, halfW);
-        
-        if (!overlap) {
-            // 겹침이 없으면 중점 연결
-            return this.createPointToPointCorridor(edge1.mid, edge2.mid, halfW, idx);
-        }
-        
-        // 겹치는 구간에 직선 통로 생성
-        const isHorizontalGap = Math.abs(edge1.mid.y - edge2.mid.y) < Math.abs(edge1.mid.x - edge2.mid.x);
-        
-        let points;
-        if (isHorizontalGap) {
-            // 좌우 연결 (수평 통로)
-            const y1 = overlap.start;
-            const y2 = overlap.end;
-            const x1 = Math.min(edge1.mid.x, edge2.mid.x);
-            const x2 = Math.max(edge1.mid.x, edge2.mid.x);
-            
-            points = [
-                { x: x1, y: y1, z: 0 },
-                { x: x2, y: y1, z: 0 },
-                { x: x2, y: y2, z: 0 },
-                { x: x1, y: y2, z: 0 }
-            ];
-        } else {
-            // 상하 연결 (수직 통로)
-            const x1 = overlap.start;
-            const x2 = overlap.end;
-            const y1 = Math.min(edge1.mid.y, edge2.mid.y);
-            const y2 = Math.max(edge1.mid.y, edge2.mid.y);
-            
-            points = [
-                { x: x1, y: y1, z: 0 },
-                { x: x2, y: y1, z: 0 },
-                { x: x2, y: y2, z: 0 },
-                { x: x1, y: y2, z: 0 }
-            ];
-        }
-        
-        return {
-            id: this.nextId++,
-            type: 'polyfloor',
-            category: 'floors',
-            floor: this.currentFloor,
-            color: 'hsla(200, 55%, 50%, 0.6)',
-            points,
-            floorHeight: 0,
-            closed: true,
-            label: `Corridor ${idx + 1}`
-        };
-    }
-    
-    findEdgeOverlap(e1, e2, halfWidth) {
-        // 두 edge가 수평인지 수직인지
-        const isE1Vertical = Math.abs(e1.p2.x - e1.p1.x) < Math.abs(e1.p2.y - e1.p1.y);
-        const isE2Vertical = Math.abs(e2.p2.x - e2.p1.x) < Math.abs(e2.p2.y - e2.p1.y);
-        
-        if (isE1Vertical && isE2Vertical) {
-            // 둘 다 수직 → Y 범위 겹침 찾기
-            const y1Min = Math.min(e1.p1.y, e1.p2.y);
-            const y1Max = Math.max(e1.p1.y, e1.p2.y);
-            const y2Min = Math.min(e2.p1.y, e2.p2.y);
-            const y2Max = Math.max(e2.p1.y, e2.p2.y);
-            
-            const overlapStart = Math.max(y1Min, y2Min);
-            const overlapEnd = Math.min(y1Max, y2Max);
-            
-            if (overlapEnd - overlapStart >= halfWidth * 2) {
-                const center = (overlapStart + overlapEnd) / 2;
-                return { start: center - halfWidth, end: center + halfWidth };
-            }
-        } else if (!isE1Vertical && !isE2Vertical) {
-            // 둘 다 수평 → X 범위 겹침 찾기
-            const x1Min = Math.min(e1.p1.x, e1.p2.x);
-            const x1Max = Math.max(e1.p1.x, e1.p2.x);
-            const x2Min = Math.min(e2.p1.x, e2.p2.x);
-            const x2Max = Math.max(e2.p1.x, e2.p2.x);
-            
-            const overlapStart = Math.max(x1Min, x2Min);
-            const overlapEnd = Math.min(x1Max, x2Max);
-            
-            if (overlapEnd - overlapStart >= halfWidth * 2) {
-                const center = (overlapStart + overlapEnd) / 2;
-                return { start: center - halfWidth, end: center + halfWidth };
-            }
-        }
-        
-        return null;
-    }
-    
-    createPointToPointCorridor(p1, p2, halfWidth, idx) {
-        // 두 점을 직선으로 연결하는 통로
-        const dx = p2.x - p1.x;
-        const dy = p2.y - p1.y;
-        const length = Math.sqrt(dx * dx + dy * dy);
-        
-        // 법선 벡터
-        const nx = -dy / length * halfWidth;
-        const ny = dx / length * halfWidth;
-        
-        const points = [
-            { x: p1.x + nx, y: p1.y + ny, z: 0 },
-            { x: p2.x + nx, y: p2.y + ny, z: 0 },
-            { x: p2.x - nx, y: p2.y - ny, z: 0 },
-            { x: p1.x - nx, y: p1.y - ny, z: 0 }
-        ];
-        
-        return {
-            id: this.nextId++,
-            type: 'polyfloor',
-            category: 'floors',
-            floor: this.currentFloor,
-            color: 'hsla(200, 55%, 50%, 0.6)',
-            points,
-            floorHeight: 0,
-            closed: true,
-            label: `Corridor ${idx + 1}`
-        };
-    }
-    
-    isOverlappingExisting(newObj) {
-        // 새 통로의 중심점이 기존 바닥 안에 있는지 체크
-        const center = {
-            x: newObj.points.reduce((s, p) => s + p.x, 0) / newObj.points.length,
-            y: newObj.points.reduce((s, p) => s + p.y, 0) / newObj.points.length
-        };
-        
-        return this.objects.some(obj => {
-            if (obj.type !== 'polyfloor' || !obj.points) return false;
-            return this.isPointInPolygon(center.x, center.y, obj.points);
-        });
-    }
-    
     proceduralExpand() {
-        const width = (parseInt(document.getElementById('corridorWidth')?.value) || 5) * 32;
-        const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
-        
-        if (floors.length === 0) {
-            this.showToast('확장할 바닥이 없습니다');
-            return;
-        }
-        
-        const expansions = [];
-        
-        // 각 바닥의 외곽 edge에서 확장
-        floors.forEach(floor => {
-            const edges = this.getEdgesFromFloor(floor);
-            
-            edges.forEach(edge => {
-                // 이 edge 방향으로 확장 가능한지 체크
-                const expansion = this.createExpansionFromEdge2(edge, width);
-                if (expansion && !this.isOverlappingExisting(expansion)) {
-                    expansions.push(expansion);
-                }
-            });
-        });
-        
-        // 최대 3개
-        const selected = expansions.slice(0, 3);
-        
-        if (selected.length === 0) {
-            this.showToast('확장 가능한 영역이 없습니다');
-            return;
-        }
-        
-        this.aiPendingObjects = selected;
-        this.aiSelectedIndices = new Set(selected.map((_, i) => i));
-        this.addAIActionButtons(`${selected.length}개 영역`);
-        this.updateAIStatus(`✅ ${selected.length}개 확장됨`, 'success');
-        this.render();
-    }
-    
-    createExpansionFromEdge2(edge, corridorWidth) {
-        const size = 256;  // 8m
-        const { p1, p2, normal } = edge;
-        
-        // 법선 방향으로 확장
-        const points = [
-            { x: p1.x, y: p1.y, z: 0 },
-            { x: p2.x, y: p2.y, z: 0 },
-            { x: p2.x + normal.x * size, y: p2.y + normal.y * size, z: 0 },
-            { x: p1.x + normal.x * size, y: p1.y + normal.y * size, z: 0 }
-        ];
-        
-        return {
-            id: this.nextId++,
-            type: 'polyfloor',
-            category: 'floors',
-            floor: this.currentFloor,
-            color: 'hsla(120, 50%, 45%, 0.6)',
-            points,
-            floorHeight: 0,
-            closed: true,
-            label: `Expansion`
-        };
+        this.showToast('영역 확장 기능은 준비 중입니다');
     }
     
     async aiAutoGenerate(mode) {
