@@ -7823,7 +7823,7 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         });
         
         // 두 바닥이 vertex를 공유하면 연결
-        const tolerance = 4;  // 4px 이내면 같은 점으로 간주
+        const tolerance = 16;  // 16px (0.5m) 이내면 같은 점으로 간주
         
         for (let i = 0; i < floors.length; i++) {
             for (let j = i + 1; j < floors.length; j++) {
@@ -8062,9 +8062,17 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     // 메인 함수: 프로시저럴 연결
     proceduralConnect() {
         const width = (parseInt(document.getElementById('corridorWidth')?.value) || 5) * 32;
+        const floors = this.objects.filter(o => o.type === 'polyfloor' && o.points?.length >= 3);
+        
+        console.log('=== 프로시저럴 연결 시작 ===');
+        console.log('바닥 수:', floors.length);
         
         // 1. 스폰/Objective 찾기
         const { defence, offence, objective } = this.findSpawnsAndObjective();
+        
+        console.log('Defence:', defence ? `(${defence.x}, ${defence.y})` : '없음');
+        console.log('Offence:', offence ? `(${offence.x}, ${offence.y})` : '없음');
+        console.log('Objective:', objective ? `(${objective.x}, ${objective.y})` : '없음');
         
         if (!objective) {
             this.showToast('Objective가 없습니다. 먼저 배치해주세요.');
@@ -8078,15 +8086,20 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         // 2. 각 지점이 포함된 바닥 찾기
         const defFloor = defence ? 
             (this.findFloorContainingPoint(defence.x + 160, defence.y + 160) || 
-             this.findFloorNearPoint(defence.x + 160, defence.y + 160)) : null;
+             this.findFloorNearPoint(defence.x + 160, defence.y + 160, 500)) : null;
         const offFloor = offence ? 
             (this.findFloorContainingPoint(offence.x + 160, offence.y + 160) || 
-             this.findFloorNearPoint(offence.x + 160, offence.y + 160)) : null;
+             this.findFloorNearPoint(offence.x + 160, offence.y + 160, 500)) : null;
         const objFloor = this.findFloorContainingPoint(objX, objY) || 
-                         this.findFloorNearPoint(objX, objY);
+                         this.findFloorNearPoint(objX, objY, 500);
+        
+        console.log('Defence 바닥:', defFloor ? defFloor.label || defFloor.id : '없음');
+        console.log('Offence 바닥:', offFloor ? offFloor.label || offFloor.id : '없음');
+        console.log('Objective 바닥:', objFloor ? objFloor.label || objFloor.id : '없음');
         
         // 3. 연결 그래프 생성
         const graph = this.buildConnectionGraph();
+        console.log('연결 그래프:', [...graph.entries()].map(([id, neighbors]) => `${id}: [${[...neighbors].join(',')}]`));
         
         // 4. 경로 체크 및 끊긴 지점에 통로 생성
         const corridors = [];
@@ -8094,26 +8107,33 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         // Defence → Objective 경로
         if (defFloor && objFloor) {
             let path = this.bfsPath(defFloor, objFloor, graph);
+            console.log('Defence→Objective 경로:', path ? path.map(f => f.label || f.id).join(' → ') : '없음');
             
             if (!path) {
                 // 경로 없음 → 끊긴 지점 찾기
                 const reachableFromDef = this.bfsReachable(defFloor, graph);
                 const reachableFromObj = this.bfsReachable(objFloor, graph);
                 
-                const gap = this.findGapBetweenSets(reachableFromDef, reachableFromObj, graph);
+                console.log('Defence에서 도달 가능:', [...reachableFromDef]);
+                console.log('Objective에서 도달 가능:', [...reachableFromObj]);
                 
-                if (gap && gap.distance < 30 * 32) {  // 30m 이내
+                const gap = this.findGapBetweenSets(reachableFromDef, reachableFromObj, graph);
+                console.log('Gap:', gap ? `${Math.round(gap.distance / 32)}m` : '없음');
+                
+                if (gap && gap.distance < 50 * 32) {  // 50m 이내로 완화
                     const corridor = this.createCorridorOnVertices(gap, width);
                     if (corridor) {
                         corridors.push(corridor);
                         this.showToast(`Defence→Objective 연결 통로 생성 (${Math.round(gap.distance / 32)}m)`);
                     }
                 } else {
-                    this.showToast('Defence→Objective 경로 너무 멀어서 연결 불가');
+                    this.showToast(`Defence→Objective 경로 너무 멀어서 연결 불가 (${gap ? Math.round(gap.distance / 32) : '?'}m)`);
                 }
             } else {
                 this.showToast('Defence→Objective 이미 연결됨');
             }
+        } else {
+            console.log('Defence 또는 Objective 바닥을 찾을 수 없음');
         }
         
         // Offence → Objective 경로
