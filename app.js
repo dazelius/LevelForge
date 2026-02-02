@@ -2797,8 +2797,10 @@ class LevelForge {
                 break;
                 
             case 'polywall':
-            case 'polycliff':
                 this.drawPolyWall(ctx, obj);
+                break;
+            case 'polycliff':
+                this.drawPolyCliff(ctx, obj);
                 break;
                 
             case 'polyfloor':
@@ -2843,14 +2845,24 @@ class LevelForge {
     drawMarker(ctx, obj) {
         const cx = obj.width !== undefined ? obj.x + obj.width / 2 : obj.x;
         const cy = obj.height !== undefined ? obj.y + obj.height / 2 : obj.y;
+        const floorHeight = obj.floorHeight || 0;
         
         // 스폰/거점 - 사각형 영역으로 그리기
         if (obj.width !== undefined && obj.height !== undefined) {
             const isSpawn = obj.type.startsWith('spawn');
             const isObjective = obj.type === 'objective';
             
+            // 높이에 따른 색상 조절
+            let bgColor = obj.color + '33';
+            if (floorHeight !== 0) {
+                // 높이가 있으면 파란색 그라데이션 오버레이
+                const hue = 210 - floorHeight * 5;
+                const lightness = Math.min(65, Math.max(20, 40 + floorHeight * 6));
+                bgColor = `hsla(${Math.min(230, Math.max(180, hue))}, 60%, ${lightness}%, 0.4)`;
+            }
+            
             // 배경 (반투명)
-            ctx.fillStyle = obj.color + '33';
+            ctx.fillStyle = bgColor;
             ctx.fillRect(obj.x, obj.y, obj.width, obj.height);
             
             // 테두리 (점선)
@@ -2915,6 +2927,30 @@ class LevelForge {
             ctx.font = '9px Inter, sans-serif';
             ctx.fillText(`${wMeters}m × ${hMeters}m`, cx, obj.y + obj.height + 12);
             
+            // 높이 표시 배지 (0이 아닌 경우)
+            if (floorHeight !== 0) {
+                const heightText = (floorHeight > 0 ? '+' : '') + floorHeight + 'm';
+                const badgeColor = floorHeight > 0 ? '#64dcff' : '#3c50a0';
+                const textColor = floorHeight > 0 ? '#003' : '#fff';
+                
+                ctx.font = 'bold 10px Arial';
+                const textWidth = ctx.measureText(heightText).width;
+                
+                // 배지 배경 (우측 상단)
+                const badgeX = obj.x + obj.width - textWidth - 8;
+                const badgeY = obj.y + 4;
+                ctx.fillStyle = badgeColor;
+                ctx.beginPath();
+                ctx.roundRect(badgeX, badgeY, textWidth + 8, 14, 3);
+                ctx.fill();
+                
+                // 텍스트
+                ctx.fillStyle = textColor;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(heightText, badgeX + textWidth/2 + 4, badgeY + 7);
+            }
+            
             return;
         }
         
@@ -2962,10 +2998,11 @@ class LevelForge {
         
         const thickness = obj.thickness || 8;
         
-        ctx.strokeStyle = obj.color;
+        // 벽은 밝은 회색
+        ctx.strokeStyle = obj.color || '#c0c0c0';
         ctx.lineWidth = thickness;
-        ctx.lineCap = 'round';
-        ctx.lineJoin = 'round';
+        ctx.lineCap = 'square';
+        ctx.lineJoin = 'miter';
         
         ctx.beginPath();
         ctx.moveTo(obj.points[0].x, obj.points[0].y);
@@ -2974,8 +3011,8 @@ class LevelForge {
         }
         ctx.stroke();
         
-        // 외곽선
-        ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+        // 외곽선 (밝은 테두리)
+        ctx.strokeStyle = 'rgba(255,255,255,0.3)';
         ctx.lineWidth = thickness + 2;
         ctx.beginPath();
         ctx.moveTo(obj.points[0].x, obj.points[0].y);
@@ -2985,7 +3022,7 @@ class LevelForge {
         ctx.stroke();
         
         // 내부 다시 그리기
-        ctx.strokeStyle = obj.color;
+        ctx.strokeStyle = obj.color || '#c0c0c0';
         ctx.lineWidth = thickness;
         ctx.beginPath();
         ctx.moveTo(obj.points[0].x, obj.points[0].y);
@@ -2995,12 +3032,34 @@ class LevelForge {
         ctx.stroke();
     }
     
+    drawPolyCliff(ctx, obj) {
+        if (!obj.points || obj.points.length < 2) return;
+        
+        const thickness = 4;  // 절벽은 얇게
+        
+        // 절벽은 파란색 계열 점선
+        ctx.strokeStyle = '#3090c0';
+        ctx.lineWidth = thickness;
+        ctx.lineCap = 'butt';
+        ctx.setLineDash([8, 4]);  // 점선
+        
+        ctx.beginPath();
+        ctx.moveTo(obj.points[0].x, obj.points[0].y);
+        for (let i = 1; i < obj.points.length; i++) {
+            ctx.lineTo(obj.points[i].x, obj.points[i].y);
+        }
+        ctx.stroke();
+        
+        ctx.setLineDash([]);  // 점선 해제
+    }
+    
     drawPolyFloor(ctx, obj) {
         if (!obj.points || obj.points.length < 3) return;
         
         const isSelected = this.isSelected(obj.id);
+        const floorHeight = obj.floorHeight || 0;
         
-        // 평균 높이 계산
+        // 평균 높이 계산 (vertex별 z값)
         let avgHeight = 0;
         let hasHeightVariation = false;
         let minZ = Infinity, maxZ = -Infinity;
@@ -3013,16 +3072,27 @@ class LevelForge {
         avgHeight /= obj.points.length;
         hasHeightVariation = (maxZ - minZ) > 0.1;
         
-        // 색상 결정: 사용자 지정 색상 우선, 없으면 높이 기반
+        // 색상 결정: floorHeight에 따라 파란색 그라데이션
         let baseColor;
-        if (obj.color) {
+        let heightColor;  // 높이 기반 오버레이 색상
+        
+        // 높이에 따른 파란색 그라데이션 계산
+        // 높음: 밝은 하늘색 (hue 190, light), 낮음: 어두운 남색 (hue 220, dark)
+        const hue = 210 - floorHeight * 5;  // 높으면 청록색 쪽, 낮으면 남색 쪽
+        const clampedHue = Math.min(230, Math.max(180, hue));
+        const lightness = Math.min(65, Math.max(20, 40 + floorHeight * 6));
+        const saturation = Math.min(70, Math.max(50, 60 + Math.abs(floorHeight) * 2));
+        heightColor = `hsla(${clampedHue}, ${saturation}%, ${lightness}%, 0.7)`;
+        
+        if (obj.color && floorHeight === 0) {
+            // 높이가 0이고 사용자 색상이 있으면 그대로 사용
             baseColor = obj.color;
+        } else if (floorHeight !== 0) {
+            // 높이가 있으면 파란색 그라데이션 사용
+            baseColor = heightColor;
         } else {
-            // 높이에 따른 색상 변경 (등고 표현)
-            const hue = avgHeight >= 0 ? 180 - avgHeight * 20 : 200 - avgHeight * 10;
-            const clampedHue = Math.min(220, Math.max(40, hue));
-            const lightness = Math.min(55, Math.max(30, 40 + avgHeight * 2));
-            baseColor = `hsla(${clampedHue}, 50%, ${lightness}%, 0.6)`;
+            // 기본 색상
+            baseColor = obj.color || 'rgba(74, 144, 226, 0.6)';
         }
         
         // 채우기
@@ -3035,12 +3105,52 @@ class LevelForge {
         ctx.closePath();
         ctx.fill();
         
+        // 높이가 0이 아닌 경우 추가 시각 표현
+        if (floorHeight !== 0) {
+            ctx.save();
+            ctx.beginPath();
+            ctx.moveTo(obj.points[0].x, obj.points[0].y);
+            for (let i = 1; i < obj.points.length; i++) {
+                ctx.lineTo(obj.points[i].x, obj.points[i].y);
+            }
+            ctx.closePath();
+            ctx.clip();
+            
+            // 높은 곳: 밝은 대각선, 낮은 곳: 어두운 대각선
+            const step = this.gridSize * 1.5;
+            if (floorHeight > 0) {
+                ctx.strokeStyle = `rgba(255, 255, 255, ${Math.min(0.4, floorHeight * 0.1)})`;
+            } else {
+                ctx.strokeStyle = `rgba(0, 0, 0, ${Math.min(0.4, Math.abs(floorHeight) * 0.1)})`;
+            }
+            ctx.lineWidth = 2;
+            
+            const minX = Math.min(...obj.points.map(p => p.x));
+            const maxX = Math.max(...obj.points.map(p => p.x));
+            const minY = Math.min(...obj.points.map(p => p.y));
+            const maxY = Math.max(...obj.points.map(p => p.y));
+            
+            // 대각선 패턴
+            for (let i = minX - (maxY - minY); i < maxX + (maxY - minY); i += step) {
+                ctx.beginPath();
+                ctx.moveTo(i, minY);
+                ctx.lineTo(i + (maxY - minY), maxY);
+                ctx.stroke();
+            }
+            ctx.restore();
+        }
+        
         // 경사면 패턴 (높이 변화가 있는 경우)
         if (hasHeightVariation) {
             ctx.save();
-            ctx.clip(); // 폴리곤 내부에만 그리기
+            ctx.beginPath();
+            ctx.moveTo(obj.points[0].x, obj.points[0].y);
+            for (let i = 1; i < obj.points.length; i++) {
+                ctx.lineTo(obj.points[i].x, obj.points[i].y);
+            }
+            ctx.closePath();
+            ctx.clip();
             
-            // 등고선 스타일 패턴
             const step = this.gridSize * 2;
             ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
             ctx.lineWidth = 1;
@@ -3051,7 +3161,6 @@ class LevelForge {
             const minY = Math.min(...obj.points.map(p => p.y));
             const maxY = Math.max(...obj.points.map(p => p.y));
             
-            // 대각선 등고선 패턴
             for (let i = minX - (maxY - minY); i < maxX + (maxY - minY); i += step) {
                 ctx.beginPath();
                 ctx.moveTo(i, minY);
@@ -3062,10 +3171,52 @@ class LevelForge {
             ctx.restore();
         }
         
-        // 외곽선 (선택 시 강조)
-        ctx.strokeStyle = isSelected ? '#4ecdc4' : 'rgba(255, 255, 255, 0.5)';
-        ctx.lineWidth = isSelected ? 3 : 2;
+        // 외곽선 (높이에 따라 파란색 계열)
+        if (floorHeight > 0) {
+            // 높음: 밝은 시안/하늘색 테두리
+            ctx.strokeStyle = isSelected ? '#4ecdc4' : `rgba(100, 220, 255, ${0.6 + floorHeight * 0.08})`;
+            ctx.lineWidth = isSelected ? 3 : 2 + Math.min(2, floorHeight * 0.3);
+        } else if (floorHeight < 0) {
+            // 낮음: 어두운 남색 테두리
+            ctx.strokeStyle = isSelected ? '#4ecdc4' : `rgba(60, 80, 160, ${0.6 + Math.abs(floorHeight) * 0.08})`;
+            ctx.lineWidth = isSelected ? 3 : 2 + Math.min(1, Math.abs(floorHeight) * 0.2);
+        } else {
+            ctx.strokeStyle = isSelected ? '#4ecdc4' : 'rgba(255, 255, 255, 0.5)';
+            ctx.lineWidth = isSelected ? 3 : 2;
+        }
+        ctx.beginPath();
+        ctx.moveTo(obj.points[0].x, obj.points[0].y);
+        for (let i = 1; i < obj.points.length; i++) {
+            ctx.lineTo(obj.points[i].x, obj.points[i].y);
+        }
+        ctx.closePath();
         ctx.stroke();
+        
+        // 높이 표시 배지 (0이 아닌 경우)
+        if (floorHeight !== 0) {
+            const cx = obj.points.reduce((sum, p) => sum + p.x, 0) / obj.points.length;
+            const cy = obj.points.reduce((sum, p) => sum + p.y, 0) / obj.points.length;
+            
+            const heightText = (floorHeight > 0 ? '+' : '') + floorHeight + 'm';
+            // 파란색 계열 배지
+            const badgeColor = floorHeight > 0 ? '#64dcff' : '#3c50a0';
+            const textColor = floorHeight > 0 ? '#003' : '#fff';
+            
+            ctx.font = 'bold 11px Arial';
+            const textWidth = ctx.measureText(heightText).width;
+            
+            // 배지 배경
+            ctx.fillStyle = badgeColor;
+            ctx.beginPath();
+            ctx.roundRect(cx - textWidth/2 - 4, cy - 8, textWidth + 8, 16, 3);
+            ctx.fill();
+            
+            // 텍스트
+            ctx.fillStyle = textColor;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(heightText, cx, cy);
+        }
         
         // 각 변(edge)의 높이 차이 표시 (경사 표시)
         const points = obj.points;
@@ -4405,7 +4556,7 @@ class LevelForge {
                         </div>
                     </div>
                     ` : ''}
-                    ${obj.type === 'floor-area' || obj.type === 'polyfloor' ? `
+                    ${obj.type === 'floor-area' || obj.type === 'polyfloor' || obj.type.startsWith('spawn') || obj.type === 'objective' ? `
                     <div class="props-field">
                         <label>바닥 높이 (m)</label>
                         <input type="number" id="propFloorHeight" value="${obj.type === 'polyfloor' ? (obj.points && obj.points[0] ? (obj.points[0].z || 0) : 0) : (obj.floorHeight || 0)}" step="0.5">
@@ -4495,6 +4646,9 @@ class LevelForge {
                     } else if (obj.type === 'polyfloor' && obj.points) {
                         // polyfloor는 모든 점의 z를 동일하게 설정
                         obj.points.forEach(p => p.z = newHeight);
+                        obj.floorHeight = newHeight;
+                    } else if (obj.type.startsWith('spawn') || obj.type === 'objective') {
+                        // spawn, objective도 floorHeight 지원
                         obj.floorHeight = newHeight;
                     }
                     
@@ -9575,6 +9729,32 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
             console.error('절벽 생성 실패:', e);
             this.showToast('절벽 생성 실패: ' + e.message, 'error');
         }
+    }
+    
+    // 모든 벽 삭제
+    removeAllWalls() {
+        const count = this.objects.filter(obj => obj.type === 'polywall').length;
+        if (count === 0) {
+            this.showToast('삭제할 벽이 없습니다');
+            return;
+        }
+        this.objects = this.objects.filter(obj => obj.type !== 'polywall');
+        this.render();
+        this.saveState();
+        this.showToast(`${count}개 벽 삭제됨`);
+    }
+    
+    // 모든 절벽 삭제
+    removeAllCliffs() {
+        const count = this.objects.filter(obj => obj.type === 'polycliff').length;
+        if (count === 0) {
+            this.showToast('삭제할 절벽이 없습니다');
+            return;
+        }
+        this.objects = this.objects.filter(obj => obj.type !== 'polycliff');
+        this.render();
+        this.saveState();
+        this.showToast(`${count}개 절벽 삭제됨`);
     }
     
     // 새 시드로 재생성 (이전 설정 사용)

@@ -126,8 +126,8 @@ def create_wall(collection, name, x, y, w, d, h, color):
     move_to_collection(obj, collection)
     return obj
 
-def create_polywall(collection, name, points, scale, thickness, height, color):
-    """폴리라인 벽 생성 (두 점 사이의 두꺼운 박스 벽) - 양면 렌더링"""
+def create_polywall(collection, name, points, scale, thickness, height, color, from_height=0):
+    """폴리라인 벽 생성 (두 점 사이의 두꺼운 박스 벽) - floor 높이에서 시작"""
     if len(points) < 2:
         return None
     
@@ -157,16 +157,20 @@ def create_polywall(collection, name, points, scale, thickness, height, color):
         nx = -dy / length * (thickness / 2)
         ny = dx / length * (thickness / 2)
         
+        # 벽 시작/끝 높이 (floor 높이에서 시작)
+        z_bottom = from_height
+        z_top = from_height + height
+        
         # 8개의 꼭짓점 (바닥 4개 + 상단 4개)
         # Y축 뒤집기
-        v1 = bm.verts.new((x1 - nx, -(y1 - ny), 0))
-        v2 = bm.verts.new((x1 + nx, -(y1 + ny), 0))
-        v3 = bm.verts.new((x2 + nx, -(y2 + ny), 0))
-        v4 = bm.verts.new((x2 - nx, -(y2 - ny), 0))
-        v5 = bm.verts.new((x1 - nx, -(y1 - ny), height))
-        v6 = bm.verts.new((x1 + nx, -(y1 + ny), height))
-        v7 = bm.verts.new((x2 + nx, -(y2 + ny), height))
-        v8 = bm.verts.new((x2 - nx, -(y2 - ny), height))
+        v1 = bm.verts.new((x1 - nx, -(y1 - ny), z_bottom))
+        v2 = bm.verts.new((x1 + nx, -(y1 + ny), z_bottom))
+        v3 = bm.verts.new((x2 + nx, -(y2 + ny), z_bottom))
+        v4 = bm.verts.new((x2 - nx, -(y2 - ny), z_bottom))
+        v5 = bm.verts.new((x1 - nx, -(y1 - ny), z_top))
+        v6 = bm.verts.new((x1 + nx, -(y1 + ny), z_top))
+        v7 = bm.verts.new((x2 + nx, -(y2 + ny), z_top))
+        v8 = bm.verts.new((x2 - nx, -(y2 - ny), z_top))
         
         # 6개 면 생성 (노멀이 바깥쪽을 향하도록 정점 순서 조정)
         try:
@@ -364,9 +368,10 @@ def process_object(collection, obj, scale):
         points = obj.get('points', [])
         thickness = obj.get('thickness', 32) * scale  # 픽셀 -> 미터
         wall_height = obj.get('height', 128) * scale  # 픽셀 -> 미터 (기본 4m)
+        from_height = obj.get('fromHeight', 0) * scale  # floor 높이에서 시작
         
         if len(points) >= 2:
-            result = create_polywall(collection, name, points, scale, thickness, wall_height, color)
+            result = create_polywall(collection, name, points, scale, thickness, wall_height, color, from_height)
     
     elif obj_type == 'polycliff':
         # 폴리라인 절벽 (두 점 사이, 아래로 내려가는 벽)
@@ -413,14 +418,16 @@ def process_object(collection, obj, scale):
             'spawn-def': (0.2, 0.7, 0.4, 0.7),
             'objective': (0.95, 0.6, 0.1, 0.7)
         }
-        result = create_floor(collection, name, x, y, w, h, colors.get(obj_type, color), 0.01)
+        # floor_height 적용 (spawn도 floor처럼 높이 오프셋)
+        spawn_height = floor_height + 0.01  # floor 위에 살짝 띄움
+        result = create_floor(collection, name, x, y, w, h, colors.get(obj_type, color), spawn_height)
         
         # 레이블이 있으면 텍스트 메시 생성
         if label and label.strip():
             center_x = x + w / 2
             center_y = y + h / 2
             size = min(w, h)
-            create_label_mesh(collection, label, center_x, center_y, size, 0.02, color)
+            create_label_mesh(collection, label, center_x, center_y, size, spawn_height + 0.01, color)
             label_created = True
     
     if label_created:
@@ -471,6 +478,11 @@ def convert_json_to_fbx(json_path, fbx_path=None):
         bpy.context.view_layer.objects.active = cliff_objs[0]
         bpy.ops.object.join()
         cliff_objs[0].name = "cliffs_merged"
+        # 노멀 재계산
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.normals_make_consistent(inside=False)
+        bpy.ops.object.mode_set(mode='OBJECT')
     
     # polywall 병합
     wall_objs = [o for o in collection.objects if o.name.startswith('polywall_')]
@@ -482,6 +494,11 @@ def convert_json_to_fbx(json_path, fbx_path=None):
         bpy.context.view_layer.objects.active = wall_objs[0]
         bpy.ops.object.join()
         wall_objs[0].name = "walls_merged"
+        # 노멀 재계산
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='SELECT')
+        bpy.ops.mesh.normals_make_consistent(inside=False)
+        bpy.ops.object.mode_set(mode='OBJECT')
     
     # polyfloor 중 gap fill (어두운 색) 병합
     gap_objs = [o for o in collection.objects if o.name.startswith('gap_fill_')]

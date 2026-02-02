@@ -148,12 +148,20 @@
 
                 <div class="tool-section" style="border-top: 1px solid #666; padding-top: 8px;">
                     <div class="tool-section-title" style="color:#888;">POST PROCESS</div>
-                    <div style="display:flex; gap:4px; flex-wrap:wrap;">
-                        <button onclick="app.generateWallsForExisting()" title="기존 레벨에 외곽 벽 생성" style="flex:1; min-width:80px; padding:6px 8px; background:#3d4a5a; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
+                    <div style="display:flex; gap:4px; flex-wrap:wrap; margin-bottom:4px;">
+                        <button onclick="app.generateWallsForExisting()" title="기존 레벨에 외곽 벽 생성" style="flex:1; min-width:70px; padding:6px 8px; background:#3d4a5a; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
                             <i class="fa-solid fa-border-all"></i> 벽 생성
                         </button>
-                        <button onclick="app.generateCliffForExisting()" title="기존 레벨에 외곽 절벽 생성" style="flex:1; min-width:80px; padding:6px 8px; background:#3d4a5a; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
+                        <button onclick="app.removeAllWalls()" title="모든 벽 삭제" style="min-width:50px; padding:6px 8px; background:#5a3d3d; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
+                            <i class="fa-solid fa-trash"></i>
+                        </button>
+                    </div>
+                    <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                        <button onclick="app.generateCliffForExisting()" title="기존 레벨에 외곽 절벽 생성" style="flex:1; min-width:70px; padding:6px 8px; background:#3d4a5a; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
                             <i class="fa-solid fa-mountain"></i> 절벽 생성
+                        </button>
+                        <button onclick="app.removeAllCliffs()" title="모든 절벽 삭제" style="min-width:50px; padding:6px 8px; background:#5a3d3d; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
+                            <i class="fa-solid fa-trash"></i>
                         </button>
                     </div>
                 </div>
