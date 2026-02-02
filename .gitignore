@@ -25,3 +25,16 @@ Thumbs.db
 # Test/export files
 test_export.json
 current_seed*.json
+
+# Node
+node_modules/
+
+# Environment
+.env
+config.txt
+
+# Temp folders
+C/
+
+# FBX exports
+*.fbx

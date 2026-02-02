@@ -795,10 +795,10 @@ def generate_map(bounds: dict, options: dict) -> dict:
     site_count = options.get('site_count', 2)  # 사이트 개수 (1, 2, 3)
     layout = options.get('layout', None)  # 프리뷰에서 설정한 노드 위치
     
-    # 벽 생성 옵션
+    # 벽 생성 옵션 (기본 비활성화 - UI에서 수동 생성)
     walls_options = options.get('walls', {})
-    enable_perimeter_walls = walls_options.get('perimeter', True)
-    enable_gap_walls = walls_options.get('gaps', True)
+    enable_perimeter_walls = walls_options.get('perimeter', False)
+    enable_gap_walls = walls_options.get('gaps', False)
     
     print(f"[DEBUG] rules received: {rules}", flush=True)
     print(f"[DEBUG] algorithm: {algorithm}, site_count: {site_count}", flush=True)
@@ -1040,8 +1040,9 @@ def generate_cliffs_from_polygon_edges(objects, options):
     grid_size = 32  # 1m = 32px
     METER = 32
     
-    # 1. 모든 polyfloor 수집
-    polyfloors = [obj for obj in objects if obj.get('type') == 'polyfloor']
+    # 1. 모든 floor 영역 수집 (polyfloor + spawn + objective)
+    floor_types = ['polyfloor', 'spawn-off', 'spawn-def', 'objective']
+    polyfloors = [obj for obj in objects if obj.get('type') in floor_types]
     if not polyfloors:
         return jsonify({'cliffs': []})
     
@@ -1049,9 +1050,18 @@ def generate_cliffs_from_polygon_edges(objects, options):
     all_x = []
     all_y = []
     for obj in polyfloors:
-        for p in obj.get('points', []):
-            all_x.append(p['x'])
-            all_y.append(p['y'])
+        if obj.get('points'):
+            for p in obj.get('points', []):
+                all_x.append(p['x'])
+                all_y.append(p['y'])
+        else:
+            # spawn/objective - x,y가 좌측상단
+            x = obj.get('x', 0)
+            y = obj.get('y', 0)
+            w = obj.get('width', 64)
+            h = obj.get('height', 64)
+            all_x.extend([x, x + w])
+            all_y.extend([y, y + h])
     
     min_x, max_x = min(all_x), max(all_x)
     min_y, max_y = min(all_y), max(all_y)
@@ -1089,7 +1099,18 @@ def generate_cliffs_from_polygon_edges(objects, options):
             for cx, cy in check_points:
                 for obj in polyfloors:
                     points = obj.get('points', [])
-                    if len(points) >= 3 and point_in_polygon(cx, cy, points):
+                    hit = False
+                    if len(points) >= 3:
+                        hit = point_in_polygon(cx, cy, points)
+                    else:
+                        # spawn/objective - 사각형 체크 (x,y가 좌측상단)
+                        ox = obj.get('x', 0)
+                        oy = obj.get('y', 0)
+                        ow = obj.get('width', 64)
+                        oh = obj.get('height', 64)
+                        hit = (ox <= cx <= ox + ow) and (oy <= cy <= oy + oh)
+                    
+                    if hit:
                         h = obj.get('floorHeight', 0) or 0
                         if height_grid[gy][gx] is None or h < height_grid[gy][gx]:
                             height_grid[gy][gx] = h
@@ -1206,8 +1227,9 @@ def generate_walls_from_polygon_edges(objects, options):
     
     grid_size = 32  # 1m = 32px
     
-    # 1. 모든 polyfloor 수집
-    polyfloors = [obj for obj in objects if obj.get('type') == 'polyfloor']
+    # 1. 모든 floor 영역 수집 (polyfloor + spawn + objective)
+    floor_types = ['polyfloor', 'spawn-off', 'spawn-def', 'objective']
+    polyfloors = [obj for obj in objects if obj.get('type') in floor_types]
     if not polyfloors:
         return jsonify({'walls': []})
     
@@ -1215,9 +1237,18 @@ def generate_walls_from_polygon_edges(objects, options):
     all_x = []
     all_y = []
     for obj in polyfloors:
-        for p in obj.get('points', []):
-            all_x.append(p['x'])
-            all_y.append(p['y'])
+        if obj.get('points'):
+            for p in obj.get('points', []):
+                all_x.append(p['x'])
+                all_y.append(p['y'])
+        else:
+            # spawn/objective는 x, y, width, height 형식 (x,y가 좌측상단)
+            x = obj.get('x', 0)
+            y = obj.get('y', 0)
+            w = obj.get('width', 64)
+            h = obj.get('height', 64)
+            all_x.extend([x, x + w])
+            all_y.extend([y, y + h])
     
     min_x, max_x = min(all_x), max(all_x)
     min_y, max_y = min(all_y), max(all_y)
@@ -1261,10 +1292,22 @@ def generate_walls_from_polygon_edges(objects, options):
                 found = False
                 for obj in polyfloors:
                     points = obj.get('points', [])
-                    if len(points) >= 3 and point_in_polygon(cx, cy, points):
-                        floor_grid[gy][gx] = True
-                        found = True
-                        break
+                    if len(points) >= 3:
+                        # polyfloor - 폴리곤 체크
+                        if point_in_polygon(cx, cy, points):
+                            floor_grid[gy][gx] = True
+                            found = True
+                            break
+                    else:
+                        # spawn/objective - 사각형 체크 (x,y가 좌측상단)
+                        ox = obj.get('x', 0)
+                        oy = obj.get('y', 0)
+                        ow = obj.get('width', 64)
+                        oh = obj.get('height', 64)
+                        if (ox <= cx <= ox + ow) and (oy <= cy <= oy + oh):
+                            floor_grid[gy][gx] = True
+                            found = True
+                            break
                 if found:
                     break
     
