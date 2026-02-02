@@ -132,10 +132,15 @@
 
                 <div class="tool-section" style="border-top: 1px solid #4a9; padding-top: 8px;">
                     <div class="tool-section-title" style="color:#4a9;">🐍 PROCEDURAL GEN</div>
-                    <button class="tool-btn-wide" onclick="app.showProceduralDialog()" title="규칙 기반 2사이트 맵 생성" style="background:#2d5a3d;">
-                        <i class="fa-solid fa-wand-magic-sparkles" style="color:#4ecdc4"></i>
-                        <span>맵 생성</span>
-                    </button>
+                    <div style="display:flex; gap:4px;">
+                        <button class="tool-btn-wide" onclick="app.showProceduralDialog()" title="규칙 기반 맵 생성" style="background:#2d5a3d; flex:1;">
+                            <i class="fa-solid fa-wand-magic-sparkles" style="color:#4ecdc4"></i>
+                            <span>맵 생성</span>
+                        </button>
+                        <button onclick="app.regenerateMap()" title="새 시드로 재생성" style="background:#2d5a3d; border:none; color:#4ecdc4; padding:8px 12px; border-radius:6px; cursor:pointer;">
+                            <i class="fa-solid fa-rotate"></i>
+                        </button>
+                    </div>
                     <div id="pyStatus" style="font-size:10px;color:#4a9;margin-top:4px;padding:0 4px;">
                         Python 서버: localhost:3003
                     </div>
@@ -282,18 +287,135 @@
 
     <!-- Procedural 파라미터 모달 -->
     <div id="proceduralModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:9999; justify-content:center; align-items:center;">
-        <div style="background:#1a1a2e; border-radius:12px; padding:24px; width:480px; max-height:80vh; overflow-y:auto; border:1px solid #4a9;">
+        <div style="background:#1a1a2e; border-radius:12px; padding:24px; width:1000px; max-height:95vh; overflow:hidden; border:1px solid #4a9; display:flex; flex-direction:column;">
             <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
                 <h3 style="color:#4ecdc4; margin:0;">맵 생성 설정</h3>
                 <button onclick="app.closeProceduralDialog()" style="background:none; border:none; color:#888; font-size:20px; cursor:pointer;">&times;</button>
             </div>
             
-            <!-- 캔버스 비우기 옵션 -->
+            <div style="display:flex; gap:20px; flex:1; overflow:hidden;">
+                <!-- 왼쪽: 프리뷰 -->
+                <div style="width:480px; flex-shrink:0; display:flex; flex-direction:column;">
+                    <div style="color:#888; font-size:12px; margin-bottom:8px;">프리뷰 (포인트 드래그 가능)</div>
+                    <canvas id="previewCanvas" width="460" height="520" style="background:#0a0a15; border-radius:8px; border:1px solid #333; cursor:crosshair;"></canvas>
+                    <div style="display:flex; gap:8px; margin-top:8px;">
+                        <button onclick="app.randomizePreview()" style="flex:1; padding:6px; background:#2d4a5a; border:none; color:#fff; border-radius:4px; cursor:pointer; font-size:11px;">랜덤 배치</button>
+                        <button onclick="app.resetPreview()" style="flex:1; padding:6px; background:#4a2d2d; border:none; color:#fff; border-radius:4px; cursor:pointer; font-size:11px;">초기화</button>
+                    </div>
+                    
+                    <!-- 랑데뷰 포인트 토글 -->
+                    <div style="background:#1a1a2e; padding:8px; border-radius:6px; margin-top:10px;">
+                        <div style="color:#888; font-size:11px; margin-bottom:6px;">랑데뷰 포인트</div>
+                        <div style="display:flex; gap:12px; flex-wrap:wrap;">
+                            <label style="display:flex; align-items:center; gap:4px; color:#1abc9c; font-size:11px; cursor:pointer;">
+                                <input type="checkbox" id="enableSideA" checked onchange="app.renderPreview()">
+                                <span>A側</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap:4px; color:#1abc9c; font-size:11px; cursor:pointer;">
+                                <input type="checkbox" id="enableSideB" checked onchange="app.renderPreview()">
+                                <span>B側</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap:4px; color:#e67e22; font-size:11px; cursor:pointer;">
+                                <input type="checkbox" id="enableLobbyA" checked onchange="app.renderPreview()">
+                                <span>A入</span>
+                            </label>
+                            <label style="display:flex; align-items:center; gap:4px; color:#e67e22; font-size:11px; cursor:pointer;">
+                                <input type="checkbox" id="enableLobbyB" checked onchange="app.renderPreview()">
+                                <span>B入</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- 연결선 제어 -->
+                    <div style="background:#1a1a2e; padding:8px; border-radius:6px; margin-top:8px;">
+                        <div style="color:#888; font-size:11px; margin-bottom:4px;">연결선 (동선)</div>
+                        <div style="color:#666; font-size:9px; line-height:1.4;">
+                            • <b>Shift+드래그</b>: 노드→노드 연결<br>
+                            • <b>× 클릭</b>: 연결 해제
+                        </div>
+                        <button onclick="app.resetConnections()" style="margin-top:6px; padding:4px 8px; background:#4a2d2d; border:none; color:#fff; border-radius:4px; cursor:pointer; font-size:10px; width:100%;">연결 초기화</button>
+                    </div>
+                    
+                    <div style="color:#666; font-size:10px; margin-top:8px; line-height:1.6;">
+                        <span style="color:#e74c3c;">●</span> ATK &nbsp;
+                        <span style="color:#3498db;">●</span> DEF &nbsp;
+                        <span style="color:#f1c40f;">●</span> SITE &nbsp;
+                        <span style="color:#9b59b6;">●</span> MID
+                    </div>
+                </div>
+                
+                <!-- 오른쪽: 설정 패널 -->
+                <div style="flex:1; overflow-y:auto; padding-right:8px;">
+                    <!-- 캔버스 비우기 옵션 -->
+                    <div style="background:#2d2d44; padding:12px; border-radius:8px; margin-bottom:16px;">
+                        <label style="display:flex; align-items:center; gap:8px; color:#fff; cursor:pointer;">
+                            <input type="checkbox" id="clearCanvas" checked style="width:18px; height:18px;">
+                            <span>캔버스 비우고 생성</span>
+                        </label>
+                    </div>
+
+            <!-- 사이트 개수 -->
             <div style="background:#2d2d44; padding:12px; border-radius:8px; margin-bottom:16px;">
-                <label style="display:flex; align-items:center; gap:8px; color:#fff; cursor:pointer;">
-                    <input type="checkbox" id="clearCanvas" checked style="width:18px; height:18px;">
-                    <span>캔버스 비우고 생성</span>
-                </label>
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">사이트 개수</div>
+                <div style="display:flex; gap:8px;">
+                    <label style="flex:1; display:flex; align-items:center; gap:6px; color:#fff; cursor:pointer; padding:8px; background:#1a1a2e; border-radius:6px;">
+                        <input type="radio" name="siteCount" value="1">
+                        <span>1개</span>
+                    </label>
+                    <label style="flex:1; display:flex; align-items:center; gap:6px; color:#fff; cursor:pointer; padding:8px; background:#1a1a2e; border-radius:6px;">
+                        <input type="radio" name="siteCount" value="2" checked>
+                        <span>2개</span>
+                    </label>
+                    <label style="flex:1; display:flex; align-items:center; gap:6px; color:#fff; cursor:pointer; padding:8px; background:#1a1a2e; border-radius:6px;">
+                        <input type="radio" name="siteCount" value="3">
+                        <span>3개</span>
+                    </label>
+                </div>
+            </div>
+
+            <!-- 알고리즘 선택 -->
+            <div style="background:#2d2d44; padding:12px; border-radius:8px; margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">알고리즘</div>
+                <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <label style="flex:1; min-width:80px; display:flex; align-items:center; gap:6px; color:#fff; cursor:pointer; padding:8px; background:#1a1a2e; border-radius:6px;">
+                        <input type="radio" name="algorithm" value="v2" checked>
+                        <span>그리드</span>
+                    </label>
+                    <label style="flex:1; min-width:80px; display:flex; align-items:center; gap:6px; color:#fff; cursor:pointer; padding:8px; background:#1a1a2e; border-radius:6px;">
+                        <input type="radio" name="algorithm" value="v3">
+                        <span>유기적</span>
+                    </label>
+                    <label style="flex:1; min-width:80px; display:flex; align-items:center; gap:6px; color:#fff; cursor:pointer; padding:8px; background:#1a1a2e; border-radius:6px; border:1px solid #4ecdc4;">
+                        <input type="radio" name="algorithm" value="v4">
+                        <span>벡터</span>
+                    </label>
+                </div>
+                <div style="font-size:10px; color:#888; margin-top:6px;">
+                    벡터: 진짜 대각선/불규칙 다각형
+                </div>
+            </div>
+
+            <!-- 사이트 크기 -->
+            <div class="param-group" style="margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">크기 설정</div>
+                <div style="display:grid; gap:8px;">
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">사이트 크기 (m)</label>
+                        <div style="display:flex; gap:8px; margin-top:4px;">
+                            <input type="number" id="siteSizeMin" value="18" min="12" max="40" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                            <span style="color:#666;">~</span>
+                            <input type="number" id="siteSizeMax" value="26" min="12" max="50" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                        </div>
+                    </div>
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">방 크기 - MID/LOBBY 등 (m)</label>
+                        <div style="display:flex; gap:8px; margin-top:4px;">
+                            <input type="number" id="roomSizeMin" value="14" min="8" max="30" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                            <span style="color:#666;">~</span>
+                            <input type="number" id="roomSizeMax" value="22" min="8" max="40" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                        </div>
+                    </div>
+                </div>
             </div>
 
             <!-- 타이밍 -->
@@ -369,6 +491,21 @@
                 </div>
             </div>
 
+            <!-- 벽 생성 옵션 -->
+            <div class="param-group" style="margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">벽 생성</div>
+                <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                    <label style="display:flex; align-items:center; gap:8px; color:#ccc; cursor:pointer; margin-bottom:6px;">
+                        <input type="checkbox" id="enablePerimeterWalls" checked style="width:16px; height:16px;">
+                        <span>외곽 벽 생성</span>
+                    </label>
+                    <label style="display:flex; align-items:center; gap:8px; color:#ccc; cursor:pointer;">
+                        <input type="checkbox" id="enableGapWalls" checked style="width:16px; height:16px;">
+                        <span>내부 틈 벽 생성</span>
+                    </label>
+                </div>
+            </div>
+
             <!-- 프리셋 버튼 -->
             <div style="display:flex; gap:8px; margin-bottom:16px;">
                 <button onclick="app.applyPreset('compact')" style="flex:1; padding:8px; background:#3d5a3d; border:none; color:#fff; border-radius:6px; cursor:pointer;">콤팩트</button>
@@ -376,10 +513,12 @@
                 <button onclick="app.applyPreset('open')" style="flex:1; padding:8px; background:#5a3d5a; border:none; color:#fff; border-radius:6px; cursor:pointer;">오픈</button>
             </div>
 
-            <!-- 생성 버튼 -->
-            <button onclick="app.generateWithParams()" style="width:100%; padding:14px; background:linear-gradient(135deg, #4ecdc4, #44a08d); border:none; color:#fff; font-size:16px; font-weight:bold; border-radius:8px; cursor:pointer;">
-                맵 생성
-            </button>
+                    <!-- 생성 버튼 -->
+                    <button onclick="app.generateWithParams()" style="width:100%; padding:14px; background:linear-gradient(135deg, #4ecdc4, #44a08d); border:none; color:#fff; font-size:16px; font-weight:bold; border-radius:8px; cursor:pointer;">
+                        맵 생성
+                    </button>
+                </div><!-- 오른쪽 설정 패널 끝 -->
+            </div><!-- flex 컨테이너 끝 -->
         </div>
     </div>
 

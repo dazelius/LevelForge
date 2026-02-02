@@ -126,6 +126,77 @@ def create_wall(collection, name, x, y, w, d, h, color):
     move_to_collection(obj, collection)
     return obj
 
+def create_polywall(collection, name, points, scale, thickness, height, color):
+    """폴리라인 벽 생성 (두 점 사이의 두꺼운 박스 벽) - 양면 렌더링"""
+    if len(points) < 2:
+        return None
+    
+    import math
+    
+    mesh = bpy.data.meshes.new(name + "_mesh")
+    obj = bpy.data.objects.new(name, mesh)
+    
+    bm = bmesh.new()
+    
+    for i in range(len(points) - 1):
+        p1 = points[i]
+        p2 = points[i + 1]
+        
+        x1, y1 = p1['x'] * scale, p1['y'] * scale
+        x2, y2 = p2['x'] * scale, p2['y'] * scale
+        
+        # 벽 방향 벡터
+        dx = x2 - x1
+        dy = y2 - y1
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 0.01:
+            continue
+        
+        # 수직 벡터 (두께 방향)
+        nx = -dy / length * (thickness / 2)
+        ny = dx / length * (thickness / 2)
+        
+        # 8개의 꼭짓점 (바닥 4개 + 상단 4개)
+        # Y축 뒤집기
+        v1 = bm.verts.new((x1 - nx, -(y1 - ny), 0))
+        v2 = bm.verts.new((x1 + nx, -(y1 + ny), 0))
+        v3 = bm.verts.new((x2 + nx, -(y2 + ny), 0))
+        v4 = bm.verts.new((x2 - nx, -(y2 - ny), 0))
+        v5 = bm.verts.new((x1 - nx, -(y1 - ny), height))
+        v6 = bm.verts.new((x1 + nx, -(y1 + ny), height))
+        v7 = bm.verts.new((x2 + nx, -(y2 + ny), height))
+        v8 = bm.verts.new((x2 - nx, -(y2 - ny), height))
+        
+        # 6개 면 생성 (노멀이 바깥쪽을 향하도록 정점 순서 조정)
+        try:
+            bm.faces.new([v4, v3, v2, v1])  # 바닥 (아래 방향)
+            bm.faces.new([v5, v6, v7, v8])  # 상단 (위 방향)
+            bm.faces.new([v1, v5, v8, v4])  # 앞면
+            bm.faces.new([v3, v7, v6, v2])  # 뒷면
+            bm.faces.new([v2, v6, v5, v1])  # 왼쪽
+            bm.faces.new([v4, v8, v7, v3])  # 오른쪽
+        except:
+            pass
+    
+    bm.normal_update()
+    
+    # 노멀 방향 확인 및 재계산
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    
+    # 매터리얼 (양면 렌더링 활성화)
+    mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.diffuse_color = color
+    mat.use_backface_culling = False  # 양면 렌더링
+    obj.data.materials.append(mat)
+    
+    collection.objects.link(obj)
+    return obj
+
 def create_polyfloor(collection, name, points, color, height=0):
     """다각형 바닥 생성 (오목 다각형 지원, 개별 vertex 높이 지원)"""
     if len(points) < 3:
@@ -212,6 +283,15 @@ def process_object(collection, obj, scale):
     
     elif obj_type == 'wall':
         result = create_wall(collection, name, x, y, w, h, WALL_HEIGHT, color)
+    
+    elif obj_type == 'polywall':
+        # 폴리라인 벽 (두 점 사이의 두꺼운 벽)
+        points = obj.get('points', [])
+        thickness = obj.get('thickness', 32) * scale  # 픽셀 -> 미터
+        wall_height = obj.get('height', 128) * scale  # 픽셀 -> 미터 (기본 4m)
+        
+        if len(points) >= 2:
+            result = create_polywall(collection, name, points, scale, thickness, wall_height, color)
     
     elif obj_type == 'polyfloor':
         points = obj.get('points', [])

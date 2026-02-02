@@ -534,6 +534,12 @@ class LevelForge {
         
         this.mouse = { x: sx, y: sy, worldX: world.x, worldY: world.y };
 
+        // 경로 연결 모드
+        if (this.pathConnectMode && e.button === 0) {
+            this.handlePathConnectClick(world.x, world.y);
+            return;
+        }
+
         // 핀 모드 - 시뮬레이션 중 클릭하면 핀 꽂기
         if (this.pinMode && this.simRunning && e.button === 0) {
             this.placePin(world.x, world.y);
@@ -960,6 +966,13 @@ class LevelForge {
         }
 
         if (e.key === 'Escape') {
+            // 경로 연결 모드 취소
+            if (this.pathConnectMode) {
+                this.cancelPathConnect();
+                this.showToast('경로 연결이 취소되었습니다');
+                return;
+            }
+            
             this.clearSelection();
             this.pathPoints = [];
             // Corridor 시작점/경유점 취소
@@ -8516,12 +8529,907 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     
     // ========== Python Procedural API 연동 ==========
     
+    // 경로 연결 모드
+    pathConnectMode = false;
+    pathConnectStart = null;
+    
+    startPathConnect() {
+        this.pathConnectMode = true;
+        this.pathConnectStart = null;
+        this.currentTool = 'path-connect';
+        this.showToast('첫 번째 점을 클릭하세요 (ESC로 취소)');
+        this.mainCanvas.style.cursor = 'crosshair';
+    }
+    
+    cancelPathConnect() {
+        this.pathConnectMode = false;
+        this.pathConnectStart = null;
+        this.currentTool = 'select';
+        this.mainCanvas.style.cursor = 'default';
+        this.render();
+    }
+    
+    // 클릭 위치에서 가장 가까운 오브젝트의 엣지 찾기
+    findNearestEdge(worldX, worldY, maxDist = 100) {
+        let nearest = null;
+        let minDist = maxDist;
+        
+        for (const obj of this.objects) {
+            if (obj.type !== 'polyfloor' || !obj.points || obj.points.length < 3) continue;
+            
+            const points = obj.points;
+            for (let i = 0; i < points.length; i++) {
+                const p1 = points[i];
+                const p2 = points[(i + 1) % points.length];
+                
+                // 점에서 선분까지 거리 및 가장 가까운 점
+                const result = this.pointToSegment(worldX, worldY, p1.x, p1.y, p2.x, p2.y);
+                
+                if (result.dist < minDist) {
+                    minDist = result.dist;
+                    nearest = {
+                        obj: obj,
+                        edgeIndex: i,
+                        point: { x: result.x, y: result.y },
+                        p1: p1,
+                        p2: p2,
+                        dist: result.dist
+                    };
+                }
+            }
+        }
+        return nearest;
+    }
+    
+    // 점에서 선분까지 거리와 가장 가까운 점
+    pointToSegment(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const len2 = dx * dx + dy * dy;
+        
+        let t = 0;
+        if (len2 > 0) {
+            t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / len2));
+        }
+        
+        const nearX = x1 + t * dx;
+        const nearY = y1 + t * dy;
+        const dist = Math.sqrt((px - nearX) ** 2 + (py - nearY) ** 2);
+        
+        return { x: nearX, y: nearY, dist: dist, t: t };
+    }
+    
+    // 직교 경로 생성 (L자 또는 ㄱ자) - 항상 꺾임
+    createOrthogonalPath(start, end, width = 160) {
+        const dx = end.x - start.x;
+        const dy = end.y - start.y;
+        const halfW = width / 2;
+        const dist = Math.sqrt(dx * dx + dy * dy);
+        
+        const corridors = [];
+        
+        // 거리가 짧으면 직선
+        if (dist < 200) {
+            // 직선 연결 (가로 또는 세로)
+            if (Math.abs(dx) > Math.abs(dy)) {
+                const minX = Math.min(start.x, end.x);
+                const maxX = Math.max(start.x, end.x);
+                corridors.push(this.createRectCorridor(minX, start.y - halfW, maxX - minX + width, width));
+            } else {
+                const minY = Math.min(start.y, end.y);
+                const maxY = Math.max(start.y, end.y);
+                corridors.push(this.createRectCorridor(start.x - halfW, minY, width, maxY - minY + width));
+            }
+            return corridors;
+        }
+        
+        // 긴 거리: 항상 L자로 꺾기
+        // 중간점 결정 (가로 먼저 또는 세로 먼저 랜덤)
+        const horizontal = Math.random() > 0.5;
+        let mid;
+        
+        if (horizontal) {
+            // 가로 → 세로
+            mid = { x: end.x, y: start.y };
+            
+            // 가로 통로
+            const minX = Math.min(start.x, mid.x);
+            const maxX = Math.max(start.x, mid.x);
+            corridors.push(this.createRectCorridor(minX, start.y - halfW, maxX - minX + width, width));
+            
+            // 세로 통로
+            const minY = Math.min(mid.y, end.y);
+            const maxY = Math.max(mid.y, end.y);
+            corridors.push(this.createRectCorridor(end.x - halfW, minY, width, maxY - minY + width));
+        } else {
+            // 세로 → 가로
+            mid = { x: start.x, y: end.y };
+            
+            // 세로 통로
+            const minY = Math.min(start.y, mid.y);
+            const maxY = Math.max(start.y, mid.y);
+            corridors.push(this.createRectCorridor(start.x - halfW, minY, width, maxY - minY + width));
+            
+            // 가로 통로
+            const minX = Math.min(mid.x, end.x);
+            const maxX = Math.max(mid.x, end.x);
+            corridors.push(this.createRectCorridor(minX, end.y - halfW, maxX - minX + width, width));
+        }
+        
+        return corridors;
+    }
+    
+    // 직사각형 통로 생성
+    createRectCorridor(x, y, w, h) {
+        return {
+            type: 'polyfloor',
+            x: x + w / 2,
+            y: y + h / 2,
+            width: w,
+            height: h,
+            points: [
+                { x: x, y: y },
+                { x: x + w, y: y },
+                { x: x + w, y: y + h },
+                { x: x, y: y + h }
+            ],
+            floorHeight: 0,
+            closed: true,
+            label: ''
+        };
+    }
+    
+    // 경로가 기존 오브젝트와 겹치는지 체크
+    doesPathOverlap(corridor, excludeIds = []) {
+        for (const obj of this.objects) {
+            if (obj.type !== 'polyfloor' || excludeIds.includes(obj.id)) continue;
+            
+            // 간단한 AABB 겹침 체크
+            const c = corridor;
+            const cMinX = Math.min(...c.points.map(p => p.x));
+            const cMaxX = Math.max(...c.points.map(p => p.x));
+            const cMinY = Math.min(...c.points.map(p => p.y));
+            const cMaxY = Math.max(...c.points.map(p => p.y));
+            
+            if (!obj.points || obj.points.length < 3) continue;
+            
+            const oMinX = Math.min(...obj.points.map(p => p.x));
+            const oMaxX = Math.max(...obj.points.map(p => p.x));
+            const oMinY = Math.min(...obj.points.map(p => p.y));
+            const oMaxY = Math.max(...obj.points.map(p => p.y));
+            
+            // 완전히 겹치면 제외 (터치는 OK)
+            const overlapX = cMinX < oMaxX - 5 && cMaxX > oMinX + 5;
+            const overlapY = cMinY < oMaxY - 5 && cMaxY > oMinY + 5;
+            
+            if (overlapX && overlapY) return true;
+        }
+        return false;
+    }
+    
+    async handlePathConnectClick(worldX, worldY) {
+        // 가장 가까운 엣지 찾기
+        const edge = this.findNearestEdge(worldX, worldY, 200);
+        
+        if (!this.pathConnectStart) {
+            // 첫 번째 점
+            if (edge) {
+                this.pathConnectStart = { 
+                    x: edge.point.x, 
+                    y: edge.point.y,
+                    edge: edge
+                };
+                this.showToast('엣지 감지됨! 두 번째 엣지를 클릭하세요');
+            } else {
+                this.pathConnectStart = { x: worldX, y: worldY, edge: null };
+                this.showToast('두 번째 점을 클릭하세요 (엣지 근처 권장)');
+            }
+            this.render();
+            
+            // 시작점 시각적 표시
+            const pt = this.pathConnectStart;
+            const ctx = this.ctx;
+            ctx.save();
+            ctx.translate(this.pan.x, this.pan.y);
+            ctx.scale(this.zoom, this.zoom);
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, 8, 0, Math.PI * 2);
+            ctx.fillStyle = '#4ecdc4';
+            ctx.fill();
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+            ctx.restore();
+        } else {
+            // 두 번째 점
+            let endPoint;
+            if (edge) {
+                endPoint = { x: edge.point.x, y: edge.point.y, edge: edge };
+            } else {
+                endPoint = { x: worldX, y: worldY, edge: null };
+            }
+            
+            const start = this.pathConnectStart;
+            
+            // 기존 오브젝트 정보 수집 (겹침 방지용)
+            const existingObjects = this.objects
+                .filter(o => o.type === 'polyfloor' && o.points && o.points.length >= 3)
+                .map(o => ({
+                    id: o.id,
+                    points: o.points
+                }));
+            
+            this.showToast('프로시저럴 경로 생성 중...');
+            
+            try {
+                const response = await fetch('http://localhost:3003/connect', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        start: { x: start.x, y: start.y },
+                        end: { x: endPoint.x, y: endPoint.y },
+                        options: {
+                            width: 5,
+                            procedural: true,
+                            existing_objects: existingObjects
+                        }
+                    })
+                });
+                
+                if (!response.ok) throw new Error('API 오류');
+                
+                const data = await response.json();
+                
+                if (data.objects && data.objects.length > 0) {
+                    data.objects.forEach(obj => {
+                        obj.id = this.nextId++;
+                        obj.floor = this.currentFloor;
+                        this.objects.push(obj);
+                    });
+                    
+                    this.showToast(`${data.objects.length}개 오브젝트 생성됨`);
+                    this.saveState();
+                } else {
+                    this.showToast('경로를 생성할 수 없습니다');
+                }
+            } catch (err) {
+                console.error('경로 생성 오류:', err);
+                this.showToast('서버 연결 실패');
+            }
+            
+            // 모드 종료
+            this.cancelPathConnect();
+        }
+    }
+    
     showProceduralDialog() {
         document.getElementById('proceduralModal').style.display = 'flex';
+        this.initPreviewCanvas();
     }
     
     closeProceduralDialog() {
         document.getElementById('proceduralModal').style.display = 'none';
+    }
+    
+    // ========== 프리뷰 캔버스 ==========
+    previewPoints = null;
+    previewDragging = null;
+    previewConnections = null;  // 연결선 배열 [{from: 'atk', to: 'mid'}, ...]
+    previewConnecting = null;   // Shift+드래그 중 시작 노드
+    previewHoveredNode = null;  // 호버 중인 노드
+    
+    initPreviewCanvas() {
+        const canvas = document.getElementById('previewCanvas');
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+        
+        // 기본 포인트 위치 설정
+        const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+        
+        if (!this.previewPoints) {
+            this.previewPoints = {
+                // 스폰
+                atk: { x: w / 2, y: h - 50, color: '#e74c3c', label: 'ATK', size: 20 },
+                def: { x: w / 2, y: 50, color: '#3498db', label: 'DEF', size: 20 },
+                // 사이트
+                siteA: { x: w / 5, y: h / 5, color: '#f1c40f', label: 'A', size: 22 },
+                siteB: { x: 4 * w / 5, y: h / 5, color: '#f1c40f', label: 'B', size: 22 },
+                siteC: { x: w / 2, y: h / 7, color: '#f1c40f', label: 'C', size: 22 },
+                // 미드
+                mid: { x: w / 2, y: h / 2, color: '#9b59b6', label: 'MID', size: 16 },
+                // 랑데뷰 포인트 (SIDE - 플랭크)
+                sideA: { x: w / 6, y: h * 0.4, color: '#1abc9c', label: 'A側', size: 14 },
+                sideB: { x: 5 * w / 6, y: h * 0.4, color: '#1abc9c', label: 'B側', size: 14 },
+                // 로비 (진입 전 대기)
+                lobbyA: { x: w / 4, y: h * 0.6, color: '#e67e22', label: 'A入', size: 14 },
+                lobbyB: { x: 3 * w / 4, y: h * 0.6, color: '#e67e22', label: 'B入', size: 14 },
+            };
+        }
+        
+        // 기본 연결선 초기화
+        if (!this.previewConnections) {
+            this.resetConnections();
+        }
+        
+        // 이벤트 리스너 (한 번만)
+        if (!canvas._hasListeners) {
+            canvas._hasListeners = true;
+            
+            canvas.addEventListener('mousedown', (e) => this.onPreviewMouseDown(e));
+            canvas.addEventListener('mousemove', (e) => this.onPreviewMouseMove(e));
+            canvas.addEventListener('click', (e) => this.onPreviewClick(e));
+            canvas.addEventListener('mouseup', (e) => this.onPreviewMouseUp(e));
+            canvas.addEventListener('mouseleave', (e) => this.onPreviewMouseUp(e));
+        }
+        
+        // 사이트 개수 변경 이벤트
+        document.querySelectorAll('input[name="siteCount"]').forEach(radio => {
+            radio.addEventListener('change', () => this.renderPreview());
+        });
+        
+        this.renderPreview();
+    }
+    
+    renderPreview() {
+        const canvas = document.getElementById('previewCanvas');
+        if (!canvas || !this.previewPoints) return;
+        
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+        const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+        
+        // 배경
+        ctx.fillStyle = '#0a0a15';
+        ctx.fillRect(0, 0, w, h);
+        
+        // 그리드
+        ctx.strokeStyle = '#1a1a2e';
+        ctx.lineWidth = 1;
+        for (let x = 0; x < w; x += 30) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+            ctx.stroke();
+        }
+        for (let y = 0; y < h; y += 30) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+        }
+        
+        const pts = this.previewPoints;
+        
+        // 토글 상태
+        const enableSideA = document.getElementById('enableSideA')?.checked ?? true;
+        const enableSideB = document.getElementById('enableSideB')?.checked ?? true;
+        const enableLobbyA = document.getElementById('enableLobbyA')?.checked ?? true;
+        const enableLobbyB = document.getElementById('enableLobbyB')?.checked ?? true;
+        
+        // 룸 사이즈 가져오기
+        const siteSizeMin = parseInt(document.getElementById('siteSizeMin')?.value || 24);
+        const siteSizeMax = parseInt(document.getElementById('siteSizeMax')?.value || 32);
+        const avgSiteSize = (siteSizeMin + siteSizeMax) / 2;
+        
+        // === 룸 사이즈 미리보기 (포인트 뒤에) ===
+        // 스폰
+        this.drawRoomPreview(ctx, pts.atk, 22, '#e74c3c');
+        this.drawRoomPreview(ctx, pts.def, 20, '#3498db');
+        
+        // 사이트
+        if (siteCount >= 1) this.drawRoomPreview(ctx, pts.siteA, avgSiteSize, '#f1c40f');
+        if (siteCount >= 2) this.drawRoomPreview(ctx, pts.siteB, avgSiteSize, '#f1c40f');
+        if (siteCount >= 3) this.drawRoomPreview(ctx, pts.siteC, avgSiteSize, '#f1c40f');
+        
+        // 미드
+        this.drawRoomPreview(ctx, pts.mid, 24, '#9b59b6');
+        
+        // 랑데뷰 포인트
+        if (siteCount >= 1 && enableSideA) this.drawRoomPreview(ctx, pts.sideA, 16, '#1abc9c');
+        if (siteCount >= 2 && enableSideB) this.drawRoomPreview(ctx, pts.sideB, 16, '#1abc9c');
+        if (siteCount >= 1 && enableLobbyA) this.drawRoomPreview(ctx, pts.lobbyA, 20, '#e67e22');
+        if (siteCount >= 2 && enableLobbyB) this.drawRoomPreview(ctx, pts.lobbyB, 20, '#e67e22');
+        
+        // 연결선 그리기 (previewConnections 기반)
+        ctx.lineWidth = 3;
+        ctx.setLineDash([5, 5]);
+        
+        // X 버튼 위치 저장 (클릭용)
+        this.connectionButtons = [];
+        
+        if (this.previewConnections) {
+            for (let i = 0; i < this.previewConnections.length; i++) {
+                const conn = this.previewConnections[i];
+                const p1 = pts[conn.from];
+                const p2 = pts[conn.to];
+                if (!p1 || !p2) continue;
+                
+                // 비활성 노드 체크
+                if (!this.isNodeEnabled(conn.from) || !this.isNodeEnabled(conn.to)) continue;
+                
+                // 사이트 개수 체크
+                if ((conn.from === 'siteB' || conn.to === 'siteB') && siteCount < 2) continue;
+                if ((conn.from === 'siteC' || conn.to === 'siteC') && siteCount < 3) continue;
+                if ((conn.from === 'sideB' || conn.to === 'sideB') && siteCount < 2) continue;
+                if ((conn.from === 'lobbyB' || conn.to === 'lobbyB') && siteCount < 2) continue;
+                
+                // 색상 결정
+                let color = '#ffffff55';
+                if (conn.from === 'atk' || conn.to === 'atk') color = '#e74c3c66';
+                else if (conn.from === 'def' || conn.to === 'def') color = '#3498db66';
+                else if (conn.from === 'mid' || conn.to === 'mid') color = '#9b59b666';
+                else if (conn.from.includes('lobby') || conn.to.includes('lobby')) color = '#e67e2266';
+                else if (conn.from.includes('side') || conn.to.includes('side')) color = '#1abc9c66';
+                
+                this.drawConnection(ctx, p1, p2, color);
+                
+                // X 버튼 (선 중앙)
+                const midX = (p1.x + p2.x) / 2;
+                const midY = (p1.y + p2.y) / 2;
+                
+                // 버튼 위치 저장
+                this.connectionButtons.push({ x: midX, y: midY, index: i });
+                
+                // X 버튼 배경
+                ctx.setLineDash([]);
+                ctx.fillStyle = '#333';
+                ctx.beginPath();
+                ctx.arc(midX, midY, 8, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // X 텍스트
+                ctx.fillStyle = '#ff6b6b';
+                ctx.font = 'bold 10px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText('×', midX, midY);
+                
+                ctx.setLineDash([5, 5]);
+            }
+        }
+        
+        ctx.setLineDash([]);
+        
+        // 포인트 그리기 (작은 것부터)
+        const hovered = this.previewHoveredNode;
+        
+        // 랑데뷰 포인트 (토글 확인)
+        if (siteCount >= 1 && enableSideA) this.drawPoint(ctx, pts.sideA, hovered === 'sideA');
+        if (siteCount >= 1 && enableLobbyA) this.drawPoint(ctx, pts.lobbyA, hovered === 'lobbyA');
+        if (siteCount >= 2 && enableSideB) this.drawPoint(ctx, pts.sideB, hovered === 'sideB');
+        if (siteCount >= 2 && enableLobbyB) this.drawPoint(ctx, pts.lobbyB, hovered === 'lobbyB');
+        
+        // 미드
+        this.drawPoint(ctx, pts.mid, hovered === 'mid');
+        
+        // 사이트
+        if (siteCount >= 1) this.drawPoint(ctx, pts.siteA, hovered === 'siteA');
+        if (siteCount >= 2) this.drawPoint(ctx, pts.siteB, hovered === 'siteB');
+        if (siteCount >= 3) this.drawPoint(ctx, pts.siteC, hovered === 'siteC');
+        
+        // 스폰
+        this.drawPoint(ctx, pts.atk, hovered === 'atk');
+        this.drawPoint(ctx, pts.def, hovered === 'def');
+        
+        // 거리 정보 표시
+        this.drawDistanceInfo(ctx, pts, siteCount);
+    }
+    
+    drawConnection(ctx, p1, p2, color) {
+        ctx.strokeStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(p1.x, p1.y);
+        ctx.lineTo(p2.x, p2.y);
+        ctx.stroke();
+    }
+    
+    drawPoint(ctx, pt, isHovered = false) {
+        const size = isHovered ? pt.size + 3 : pt.size;
+        
+        // 호버 시 외곽 글로우 강조
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, size + (isHovered ? 8 : 4), 0, Math.PI * 2);
+        ctx.fillStyle = isHovered ? pt.color + '66' : pt.color + '33';
+        ctx.fill();
+        
+        // 호버 시 추가 링
+        if (isHovered) {
+            ctx.beginPath();
+            ctx.arc(pt.x, pt.y, size + 5, 0, Math.PI * 2);
+            ctx.strokeStyle = '#fff';
+            ctx.lineWidth = 2;
+            ctx.stroke();
+        }
+        
+        // 메인 원
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, size, 0, Math.PI * 2);
+        ctx.fillStyle = pt.color;
+        ctx.fill();
+        ctx.strokeStyle = isHovered ? '#fff' : '#ffffff99';
+        ctx.lineWidth = isHovered ? 3 : 2;
+        ctx.stroke();
+        
+        // 라벨
+        ctx.fillStyle = '#fff';
+        ctx.font = isHovered ? 'bold 12px sans-serif' : 'bold 11px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(pt.label, pt.x, pt.y);
+    }
+    
+    drawDistanceInfo(ctx, pts, siteCount) {
+        const canvas = document.getElementById('previewCanvas');
+        const w = canvas?.width || 460;
+        const h = canvas?.height || 520;
+        const scale = 0.4; // 픽셀 → 미터 (대략)
+        
+        // 토글 상태
+        const enableSideA = document.getElementById('enableSideA')?.checked ?? true;
+        const enableSideB = document.getElementById('enableSideB')?.checked ?? true;
+        const enableLobbyA = document.getElementById('enableLobbyA')?.checked ?? true;
+        const enableLobbyB = document.getElementById('enableLobbyB')?.checked ?? true;
+        
+        // === 거리 정보 패널 ===
+        ctx.fillStyle = '#00000088';
+        ctx.fillRect(5, h - 85, 130, 80);
+        ctx.strokeStyle = '#333';
+        ctx.strokeRect(5, h - 85, 130, 80);
+        
+        ctx.fillStyle = '#4ecdc4';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('거리 정보', 10, h - 73);
+        
+        ctx.fillStyle = '#aaa';
+        ctx.font = '9px sans-serif';
+        let y = h - 58;
+        
+        if (siteCount >= 1) {
+            const distA = Math.sqrt((pts.atk.x - pts.siteA.x) ** 2 + (pts.atk.y - pts.siteA.y) ** 2) * scale;
+            const defDistA = Math.sqrt((pts.def.x - pts.siteA.x) ** 2 + (pts.def.y - pts.siteA.y) ** 2) * scale;
+            ctx.fillText(`ATK→A: ${distA.toFixed(0)}m`, 10, y); y += 11;
+            ctx.fillText(`DEF→A: ${defDistA.toFixed(0)}m`, 10, y); y += 11;
+        }
+        
+        if (siteCount >= 2) {
+            const distB = Math.sqrt((pts.atk.x - pts.siteB.x) ** 2 + (pts.atk.y - pts.siteB.y) ** 2) * scale;
+            const defDistB = Math.sqrt((pts.def.x - pts.siteB.x) ** 2 + (pts.def.y - pts.siteB.y) ** 2) * scale;
+            ctx.fillText(`ATK→B: ${distB.toFixed(0)}m`, 10, y); y += 11;
+            ctx.fillText(`DEF→B: ${defDistB.toFixed(0)}m`, 10, y); y += 11;
+        }
+        
+        // MID 거리
+        const midDist = Math.sqrt((pts.atk.x - pts.mid.x) ** 2 + (pts.atk.y - pts.mid.y) ** 2) * scale;
+        ctx.fillText(`ATK→MID: ${midDist.toFixed(0)}m`, 10, y);
+        
+        // === 룸 사이즈 패널 ===
+        const siteSizeMin = parseInt(document.getElementById('siteSizeMin')?.value || 18);
+        const siteSizeMax = parseInt(document.getElementById('siteSizeMax')?.value || 26);
+        const roomSizeMin = parseInt(document.getElementById('roomSizeMin')?.value || 14);
+        const roomSizeMax = parseInt(document.getElementById('roomSizeMax')?.value || 22);
+        
+        ctx.fillStyle = '#00000088';
+        ctx.fillRect(w - 135, h - 70, 130, 65);
+        ctx.strokeStyle = '#333';
+        ctx.strokeRect(w - 135, h - 70, 130, 65);
+        
+        ctx.fillStyle = '#f1c40f';
+        ctx.font = 'bold 10px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText('예상 룸 사이즈', w - 130, h - 58);
+        
+        ctx.fillStyle = '#aaa';
+        ctx.font = '9px sans-serif';
+        ctx.fillText(`SITE: ${siteSizeMin}~${siteSizeMax}m`, w - 130, h - 44);
+        ctx.fillText(`MID/LOBBY: ${roomSizeMin}~${roomSizeMax}m`, w - 130, h - 32);
+        ctx.fillText(`SIDE: ${Math.max(8,roomSizeMin-4)}~${Math.max(12,roomSizeMax-4)}m`, w - 130, h - 20);
+    }
+    
+    // 룸 사이즈 미리보기 그리기 (포인트 뒤에)
+    drawRoomPreview(ctx, pt, sizeM, color) {
+        const scale = 2.5; // 미터 → 픽셀 (프리뷰용)
+        const sizePx = sizeM * scale;
+        const half = sizePx / 2;
+        
+        ctx.fillStyle = color + '15';
+        ctx.strokeStyle = color + '40';
+        ctx.lineWidth = 1;
+        ctx.setLineDash([3, 3]);
+        
+        ctx.beginPath();
+        ctx.rect(pt.x - half, pt.y - half, sizePx, sizePx);
+        ctx.fill();
+        ctx.stroke();
+        
+        ctx.setLineDash([]);
+    }
+    
+    onPreviewMouseDown(e) {
+        const canvas = document.getElementById('previewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+        
+        // 어떤 포인트를 클릭했는지 확인
+        for (const [key, pt] of Object.entries(this.previewPoints)) {
+            // 사이트 개수에 따라 비활성 포인트 제외
+            if (key === 'siteC' && siteCount < 3) continue;
+            if (key === 'siteB' && siteCount < 2) continue;
+            if (!this.isNodeEnabled(key)) continue;
+            
+            const dist = Math.sqrt((x - pt.x) ** 2 + (y - pt.y) ** 2);
+            if (dist < pt.size + 5) {
+                if (e.shiftKey) {
+                    // Shift+드래그: 연결 모드
+                    this.previewConnecting = key;
+                    canvas.style.cursor = 'crosshair';
+                } else {
+                    // 일반 드래그: 이동 모드
+                    this.previewDragging = key;
+                    canvas.style.cursor = 'grabbing';
+                }
+                return;
+            }
+        }
+    }
+    
+    // 노드가 활성화되어 있는지 확인
+    isNodeEnabled(key) {
+        if (key === 'sideA') return document.getElementById('enableSideA')?.checked ?? true;
+        if (key === 'sideB') return document.getElementById('enableSideB')?.checked ?? true;
+        if (key === 'lobbyA') return document.getElementById('enableLobbyA')?.checked ?? true;
+        if (key === 'lobbyB') return document.getElementById('enableLobbyB')?.checked ?? true;
+        return true;
+    }
+    
+    // X 버튼 클릭 (연결선 삭제)
+    onPreviewClick(e) {
+        if (this.previewDragging || this.previewConnecting) return;
+        if (!this.connectionButtons) return;
+        
+        const canvas = document.getElementById('previewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        // X 버튼 클릭 확인
+        for (const btn of this.connectionButtons) {
+            const dist = Math.sqrt((x - btn.x) ** 2 + (y - btn.y) ** 2);
+            if (dist < 12) {
+                // 연결선 삭제
+                this.previewConnections.splice(btn.index, 1);
+                this.renderPreview();
+                return;
+            }
+        }
+    }
+    
+    onPreviewMouseMove(e) {
+        const canvas = document.getElementById('previewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const rawX = e.clientX - rect.left;
+        const rawY = e.clientY - rect.top;
+        const x = Math.max(20, Math.min(canvas.width - 20, rawX));
+        const y = Math.max(20, Math.min(canvas.height - 20, rawY));
+        
+        if (this.previewDragging) {
+            // 노드 이동
+            this.previewPoints[this.previewDragging].x = x;
+            this.previewPoints[this.previewDragging].y = y;
+            canvas.style.cursor = 'grabbing';
+            this.renderPreview();
+            this.updateParamsFromPreview();
+        } else if (this.previewConnecting) {
+            // 연결 중 - 선 미리보기
+            this.renderPreview();
+            const ctx = canvas.getContext('2d');
+            const startPt = this.previewPoints[this.previewConnecting];
+            ctx.strokeStyle = '#4ecdc4';
+            ctx.lineWidth = 3;
+            ctx.setLineDash([5, 5]);
+            ctx.beginPath();
+            ctx.moveTo(startPt.x, startPt.y);
+            ctx.lineTo(rawX, rawY);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        } else {
+            // 호버 체크
+            const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+            let hoveredNode = null;
+            
+            for (const [key, pt] of Object.entries(this.previewPoints)) {
+                if (key === 'siteC' && siteCount < 3) continue;
+                if (key === 'siteB' && siteCount < 2) continue;
+                if (!this.isNodeEnabled(key)) continue;
+                
+                const dist = Math.sqrt((rawX - pt.x) ** 2 + (rawY - pt.y) ** 2);
+                if (dist < pt.size + 5) {
+                    hoveredNode = key;
+                    break;
+                }
+            }
+            
+            if (hoveredNode !== this.previewHoveredNode) {
+                this.previewHoveredNode = hoveredNode;
+                canvas.style.cursor = hoveredNode ? 'pointer' : 'crosshair';
+                this.renderPreview();
+            }
+        }
+    }
+    
+    onPreviewMouseUp(e) {
+        const canvas = document.getElementById('previewCanvas');
+        
+        if (this.previewConnecting && e) {
+            // 연결 완료 - 대상 노드 찾기
+            const rect = canvas.getBoundingClientRect();
+            const x = e.clientX - rect.left;
+            const y = e.clientY - rect.top;
+            const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+            
+            for (const [key, pt] of Object.entries(this.previewPoints)) {
+                if (key === this.previewConnecting) continue;
+                if (key === 'siteC' && siteCount < 3) continue;
+                if (key === 'siteB' && siteCount < 2) continue;
+                if (!this.isNodeEnabled(key)) continue;
+                
+                const dist = Math.sqrt((x - pt.x) ** 2 + (y - pt.y) ** 2);
+                if (dist < pt.size + 10) {
+                    // 연결 추가 (중복 체크)
+                    this.addConnection(this.previewConnecting, key);
+                    break;
+                }
+            }
+        }
+        
+        this.previewDragging = null;
+        this.previewConnecting = null;
+        if (canvas) canvas.style.cursor = 'crosshair';
+        this.renderPreview();
+    }
+    
+    // 연결 추가
+    addConnection(from, to) {
+        if (!this.previewConnections) this.previewConnections = [];
+        
+        // 중복 체크 (방향 무관)
+        const exists = this.previewConnections.some(c => 
+            (c.from === from && c.to === to) || (c.from === to && c.to === from)
+        );
+        
+        if (!exists) {
+            this.previewConnections.push({ from, to });
+        }
+    }
+    
+    // 연결 초기화
+    resetConnections() {
+        this.previewConnections = [
+            { from: 'atk', to: 'mid' },
+            { from: 'atk', to: 'lobbyA' },
+            { from: 'atk', to: 'lobbyB' },
+            { from: 'lobbyA', to: 'siteA' },
+            { from: 'lobbyB', to: 'siteB' },
+            { from: 'mid', to: 'sideA' },
+            { from: 'mid', to: 'sideB' },
+            { from: 'sideA', to: 'siteA' },
+            { from: 'sideB', to: 'siteB' },
+            { from: 'def', to: 'siteA' },
+            { from: 'def', to: 'siteB' },
+        ];
+        this.renderPreview();
+    }
+    
+    updateParamsFromPreview() {
+        if (!this.previewPoints) return;
+        
+        const pts = this.previewPoints;
+        const scale = 0.4; // 픽셀 → 미터
+        const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+        
+        // ATK → Site 거리 계산
+        let minAtkDist = Infinity, maxAtkDist = 0;
+        if (siteCount >= 1) {
+            const d = Math.sqrt((pts.atk.x - pts.siteA.x) ** 2 + (pts.atk.y - pts.siteA.y) ** 2) * scale;
+            minAtkDist = Math.min(minAtkDist, d);
+            maxAtkDist = Math.max(maxAtkDist, d);
+        }
+        if (siteCount >= 2) {
+            const d = Math.sqrt((pts.atk.x - pts.siteB.x) ** 2 + (pts.atk.y - pts.siteB.y) ** 2) * scale;
+            minAtkDist = Math.min(minAtkDist, d);
+            maxAtkDist = Math.max(maxAtkDist, d);
+        }
+        
+        // DEF → Site 거리 계산
+        let minDefDist = Infinity, maxDefDist = 0;
+        if (siteCount >= 1) {
+            const d = Math.sqrt((pts.def.x - pts.siteA.x) ** 2 + (pts.def.y - pts.siteA.y) ** 2) * scale;
+            minDefDist = Math.min(minDefDist, d);
+            maxDefDist = Math.max(maxDefDist, d);
+        }
+        if (siteCount >= 2) {
+            const d = Math.sqrt((pts.def.x - pts.siteB.x) ** 2 + (pts.def.y - pts.siteB.y) ** 2) * scale;
+            minDefDist = Math.min(minDefDist, d);
+            maxDefDist = Math.max(maxDefDist, d);
+        }
+        
+        // 입력 필드 업데이트
+        const atkMinEl = document.getElementById('atkToSiteMin');
+        const atkMaxEl = document.getElementById('atkToSiteMax');
+        const defMinEl = document.getElementById('defToSiteMin');
+        const defMaxEl = document.getElementById('defToSiteMax');
+        
+        if (atkMinEl && minAtkDist < Infinity) atkMinEl.value = Math.round(minAtkDist);
+        if (atkMaxEl && maxAtkDist > 0) atkMaxEl.value = Math.round(maxAtkDist);
+        if (defMinEl && minDefDist < Infinity) defMinEl.value = Math.round(minDefDist);
+        if (defMaxEl && maxDefDist > 0) defMaxEl.value = Math.round(maxDefDist);
+    }
+    
+    randomizePreview() {
+        const canvas = document.getElementById('previewCanvas');
+        if (!canvas) return;
+        
+        const w = canvas.width;
+        const h = canvas.height;
+        const margin = 40;
+        
+        // 랜덤 위치 (약간의 제약)
+        this.previewPoints.atk.x = w / 2 + (Math.random() - 0.5) * 100;
+        this.previewPoints.atk.y = h - margin - Math.random() * 30;
+        
+        this.previewPoints.def.x = w / 2 + (Math.random() - 0.5) * 100;
+        this.previewPoints.def.y = margin + Math.random() * 30;
+        
+        this.previewPoints.mid.x = w / 2 + (Math.random() - 0.5) * 80;
+        this.previewPoints.mid.y = h / 2 + (Math.random() - 0.5) * 60;
+        
+        this.previewPoints.siteA.x = margin + Math.random() * (w / 3);
+        this.previewPoints.siteA.y = margin + Math.random() * (h / 3);
+        
+        this.previewPoints.siteB.x = w - margin - Math.random() * (w / 3);
+        this.previewPoints.siteB.y = margin + Math.random() * (h / 3);
+        
+        this.previewPoints.siteC.x = w / 2 + (Math.random() - 0.5) * 100;
+        this.previewPoints.siteC.y = margin + Math.random() * 60;
+        
+        this.renderPreview();
+        this.updateParamsFromPreview();
+    }
+    
+    resetPreview() {
+        const canvas = document.getElementById('previewCanvas');
+        if (!canvas) return;
+        
+        const w = canvas.width;
+        const h = canvas.height;
+        
+        this.previewPoints = {
+            // 스폰
+            atk: { x: w / 2, y: h - 50, color: '#e74c3c', label: 'ATK', size: 20 },
+            def: { x: w / 2, y: 50, color: '#3498db', label: 'DEF', size: 20 },
+            // 사이트
+            siteA: { x: w / 5, y: h / 5, color: '#f1c40f', label: 'A', size: 22 },
+            siteB: { x: 4 * w / 5, y: h / 5, color: '#f1c40f', label: 'B', size: 22 },
+            siteC: { x: w / 2, y: h / 7, color: '#f1c40f', label: 'C', size: 22 },
+            // 미드
+            mid: { x: w / 2, y: h / 2, color: '#9b59b6', label: 'MID', size: 16 },
+            // 랑데뷰 포인트 (SIDE - 플랭크)
+            sideA: { x: w / 6, y: h * 0.4, color: '#1abc9c', label: 'A側', size: 14 },
+            sideB: { x: 5 * w / 6, y: h * 0.4, color: '#1abc9c', label: 'B側', size: 14 },
+            // 로비 (진입 전 대기)
+            lobbyA: { x: w / 4, y: h * 0.6, color: '#e67e22', label: 'A入', size: 14 },
+            lobbyB: { x: 3 * w / 4, y: h * 0.6, color: '#e67e22', label: 'B入', size: 14 },
+        };
+        
+        this.renderPreview();
+        this.updateParamsFromPreview();
     }
     
     applyPreset(preset) {
@@ -8567,11 +9475,65 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         this.showToast(`${preset} 프리셋 적용됨`);
     }
     
+    // 새 시드로 재생성 (이전 설정 사용)
+    async regenerateMap() {
+        if (!this.lastGenerateOptions) {
+            this.showToast('먼저 맵을 생성해주세요');
+            return;
+        }
+        
+        const PYTHON_API = 'http://localhost:3003';
+        
+        // 새 시드 적용
+        this.lastGenerateOptions.options.seed = Math.floor(Math.random() * 1000000);
+        
+        // 캔버스 비우기
+        this.objects = [];
+        this.nextId = 1;
+        
+        this.showToast(`재생성 중... (Seed: ${this.lastGenerateOptions.options.seed})`);
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(this.lastGenerateOptions)
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.objects && data.objects.length > 0) {
+                data.objects.forEach(obj => {
+                    obj.id = this.nextId++;
+                    this.objects.push(obj);
+                });
+                
+                this.render();
+                this.showToast(`${data.objects.length}개 오브젝트 (Seed: ${data.seed})`);
+            }
+        } catch (e) {
+            console.error('재생성 실패:', e);
+            this.showToast('재생성 실패: ' + e.message, 'error');
+        }
+    }
+    
     async generateWithParams() {
         const PYTHON_API = 'http://localhost:3003';
         
         // 파라미터 수집
         const rules = {
+            sizes: {
+                site: [
+                    parseInt(document.getElementById('siteSizeMin').value),
+                    parseInt(document.getElementById('siteSizeMax').value)
+                ],
+                room: [
+                    parseInt(document.getElementById('roomSizeMin').value),
+                    parseInt(document.getElementById('roomSizeMax').value)
+                ]
+            },
             timing: {
                 atk_to_site: [
                     parseInt(document.getElementById('atkToSiteMin').value),
@@ -8608,25 +9570,73 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
             this.nextId = 1;
         }
         
+        // 알고리즘 선택
+        const algorithm = document.querySelector('input[name="algorithm"]:checked')?.value || 'v2';
+        
+        // 사이트 개수
+        const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+        
+        // 프리뷰 레이아웃 정보 (노드 위치를 정규화해서 전달)
+        let layout = null;
+        if (this.previewPoints) {
+            const canvas = document.getElementById('previewCanvas');
+            const w = canvas?.width || 360;
+            const h = canvas?.height || 400;
+            
+            // 0~1 범위로 정규화
+            layout = {
+                atk: { x: this.previewPoints.atk.x / w, y: this.previewPoints.atk.y / h },
+                def: { x: this.previewPoints.def.x / w, y: this.previewPoints.def.y / h },
+                mid: { x: this.previewPoints.mid.x / w, y: this.previewPoints.mid.y / h },
+                siteA: { x: this.previewPoints.siteA.x / w, y: this.previewPoints.siteA.y / h },
+                siteB: { x: this.previewPoints.siteB.x / w, y: this.previewPoints.siteB.y / h },
+                siteC: { x: this.previewPoints.siteC.x / w, y: this.previewPoints.siteC.y / h },
+            };
+            
+            // 랑데뷰 포인트 (토글된 것만)
+            if (document.getElementById('enableSideA')?.checked) {
+                layout.sideA = { x: this.previewPoints.sideA.x / w, y: this.previewPoints.sideA.y / h };
+            }
+            if (document.getElementById('enableSideB')?.checked) {
+                layout.sideB = { x: this.previewPoints.sideB.x / w, y: this.previewPoints.sideB.y / h };
+            }
+            if (document.getElementById('enableLobbyA')?.checked) {
+                layout.lobbyA = { x: this.previewPoints.lobbyA.x / w, y: this.previewPoints.lobbyA.y / h };
+            }
+            if (document.getElementById('enableLobbyB')?.checked) {
+                layout.lobbyB = { x: this.previewPoints.lobbyB.x / w, y: this.previewPoints.lobbyB.y / h };
+            }
+        }
+        
         // 모달 닫기
         this.closeProceduralDialog();
         
         // 기본 영역
         const bounds = { x: -2400, y: -2400, width: 4800, height: 4800 };
         
-        this.showToast('맵 생성 중...');
+        this.showToast(`맵 생성 중... (${algorithm === 'v3' ? '유기적' : '그리드형'})`);
         
         try {
+            // 설정 저장 (재생성용)
+            this.lastGenerateOptions = {
+                bounds: bounds,
+                options: {
+                    seed: Math.floor(Math.random() * 1000000),
+                    rules: rules,
+                    algorithm: algorithm,
+                    site_count: siteCount,
+                    layout: layout,
+                    walls: {
+                        perimeter: document.getElementById('enablePerimeterWalls')?.checked ?? true,
+                        gaps: document.getElementById('enableGapWalls')?.checked ?? true
+                    }
+                }
+            };
+            
             const response = await fetch(`${PYTHON_API}/generate`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    bounds: bounds,
-                    options: {
-                        seed: Math.floor(Math.random() * 1000000),
-                        rules: rules
-                    }
-                })
+                body: JSON.stringify(this.lastGenerateOptions)
             });
             
             if (!response.ok) throw new Error('API 오류');
