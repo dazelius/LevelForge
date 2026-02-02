@@ -146,6 +146,18 @@
                     </div>
                 </div>
 
+                <div class="tool-section" style="border-top: 1px solid #666; padding-top: 8px;">
+                    <div class="tool-section-title" style="color:#888;">POST PROCESS</div>
+                    <div style="display:flex; gap:4px; flex-wrap:wrap;">
+                        <button onclick="app.generateWallsForExisting()" title="기존 레벨에 외곽 벽 생성" style="flex:1; min-width:80px; padding:6px 8px; background:#3d4a5a; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
+                            <i class="fa-solid fa-border-all"></i> 벽 생성
+                        </button>
+                        <button onclick="app.generateCliffForExisting()" title="기존 레벨에 외곽 절벽 생성" style="flex:1; min-width:80px; padding:6px 8px; background:#3d4a5a; border:none; color:#ccc; border-radius:4px; cursor:pointer; font-size:11px;">
+                            <i class="fa-solid fa-mountain"></i> 절벽 생성
+                        </button>
+                    </div>
+                </div>
+
                 <div class="tool-section objects-section">
                     <div class="tool-section-title">
                         OBJECTS <span id="objectCount" class="badge">0</span>

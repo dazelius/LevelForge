@@ -74,6 +74,7 @@ class LevelForge {
             'wall': '#e0e0e0',        // 벽 - 밝은 회색
             'wall-diag': '#e0e0e0',   // 대각선 벽 - 밝은 회색
             'polywall': '#e0e0e0',    // 폴리 벽 - 밝은 회색
+            'polycliff': '#1a2530',   // 폴리 절벽 - 어두운 색
             'cover-full': '#f5b041',  // 풀커버 - 주황
             'cover-half': '#f7dc6f',  // 하프커버 - 노랑
             'ramp': '#a0522d',        // 경사로 - 시에나
@@ -1857,7 +1858,7 @@ class LevelForge {
                 if (this.isPointInPolygon(x, y, obj.points)) return obj;
             } else if (obj.points) {
                 for (let i = 0; i < obj.points.length - 1; i++) {
-                    const threshold = obj.type === 'polywall' ? (obj.thickness || 8) + 5 : 12;
+                    const threshold = (obj.type === 'polywall' || obj.type === 'polycliff') ? (obj.thickness || 8) + 5 : 12;
                     if (this.distToSegment(x, y, obj.points[i], obj.points[i+1]) < threshold) {
                         return obj;
                     }
@@ -2796,6 +2797,7 @@ class LevelForge {
                 break;
                 
             case 'polywall':
+            case 'polycliff':
                 this.drawPolyWall(ctx, obj);
                 break;
                 
@@ -4644,7 +4646,7 @@ class LevelForge {
         
         const icons = {
             'floor-area': 'fa-vector-square', 'ramp': 'fa-sort-up',
-            'wall': 'fa-square', 'wall-diag': 'fa-slash', 'polywall': 'fa-draw-polygon',
+            'wall': 'fa-square', 'wall-diag': 'fa-slash', 'polywall': 'fa-draw-polygon', 'polycliff': 'fa-mountain',
             'cover-full': 'fa-shield-halved', 'cover-half': 'fa-bars',
             'door': 'fa-door-open', 'window': 'fa-window-maximize',
             'spawn-def': 'fa-shield', 'spawn-off': 'fa-crosshairs',
@@ -9473,6 +9475,106 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         document.getElementById('exposedMaxVal').textContent = p.exposedMax + 'm';
         
         this.showToast(`${preset} 프리셋 적용됨`);
+    }
+    
+    // 기존 레벨에 외곽 벽 생성
+    async generateWallsForExisting() {
+        const PYTHON_API = 'http://localhost:3003';
+        
+        // 현재 polyfloor들만 추출
+        const polyfloors = this.objects.filter(obj => obj.type === 'polyfloor');
+        
+        if (polyfloors.length === 0) {
+            this.showToast('polyfloor가 없습니다');
+            return;
+        }
+        
+        this.showToast('벽 생성 중...');
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/post-process/walls`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    objects: polyfloors,
+                    options: {
+                        wall_height: 4.0,  // 4m
+                        wall_thickness: 1.0  // 1m
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.walls && data.walls.length > 0) {
+                // 기존 polywall 제거
+                this.objects = this.objects.filter(obj => obj.type !== 'polywall');
+                
+                // 새 벽 추가
+                data.walls.forEach(wall => {
+                    wall.id = this.nextId++;
+                    this.objects.push(wall);
+                });
+                
+                this.render();
+                this.showToast(`${data.walls.length}개 벽 생성됨`);
+            }
+        } catch (e) {
+            console.error('벽 생성 실패:', e);
+            this.showToast('벽 생성 실패: ' + e.message, 'error');
+        }
+    }
+    
+    // 기존 레벨에 외곽 절벽 생성
+    async generateCliffForExisting() {
+        const PYTHON_API = 'http://localhost:3003';
+        
+        // 현재 polyfloor들만 추출
+        const polyfloors = this.objects.filter(obj => obj.type === 'polyfloor');
+        
+        if (polyfloors.length === 0) {
+            this.showToast('polyfloor가 없습니다');
+            return;
+        }
+        
+        this.showToast('절벽 생성 중...');
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/post-process/cliff`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    objects: polyfloors,
+                    options: {
+                        cliff_depth: -8.0,  // 8m 아래
+                        cliff_width: 8  // 8m 폭
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.cliffs && data.cliffs.length > 0) {
+                // 기존 polycliff 삭제
+                this.objects = this.objects.filter(obj => obj.type !== 'polycliff');
+                
+                // 새 절벽 추가
+                data.cliffs.forEach(cliff => {
+                    cliff.id = this.nextId++;
+                    this.objects.push(cliff);
+                });
+                
+                this.render();
+                this.showToast(`${data.cliffs.length}개 절벽 생성됨 (기존 삭제됨)`);
+            }
+        } catch (e) {
+            console.error('절벽 생성 실패:', e);
+            this.showToast('절벽 생성 실패: ' + e.message, 'error');
+        }
     }
     
     // 새 시드로 재생성 (이전 설정 사용)

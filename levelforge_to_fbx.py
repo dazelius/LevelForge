@@ -197,6 +197,81 @@ def create_polywall(collection, name, points, scale, thickness, height, color):
     collection.objects.link(obj)
     return obj
 
+
+def create_polycliff(collection, name, points, scale, thickness, depth, color, from_height=0):
+    """폴리라인 절벽 생성 (두 점 사이, 얇은 박스 형태)"""
+    if len(points) < 2:
+        return None
+    
+    import math
+    
+    mesh = bpy.data.meshes.new(name + "_mesh")
+    obj = bpy.data.objects.new(name, mesh)
+    
+    bm = bmesh.new()
+    
+    wall_thickness = 0.1  # 10cm 두께
+    
+    for i in range(len(points) - 1):
+        p1 = points[i]
+        p2 = points[i + 1]
+        
+        x1, y1 = p1['x'] * scale, p1['y'] * scale
+        x2, y2 = p2['x'] * scale, p2['y'] * scale
+        
+        # 벽 방향 벡터
+        dx = x2 - x1
+        dy = y2 - y1
+        length = math.sqrt(dx*dx + dy*dy)
+        
+        if length < 0.01:
+            continue
+        
+        # 수직 벡터 (두께 방향)
+        nx = -dy / length * (wall_thickness / 2)
+        ny = dx / length * (wall_thickness / 2)
+        
+        # 벽과 겹치지 않게 시작점을 약간 아래로
+        z_top = from_height - 0.02
+        z_bottom = from_height - depth
+        
+        # Y축 뒤집기 - 8개 버텍스 (박스 형태)
+        v1 = bm.verts.new((x1 - nx, -(y1 - ny), z_top))
+        v2 = bm.verts.new((x1 + nx, -(y1 + ny), z_top))
+        v3 = bm.verts.new((x2 + nx, -(y2 + ny), z_top))
+        v4 = bm.verts.new((x2 - nx, -(y2 - ny), z_top))
+        v5 = bm.verts.new((x1 - nx, -(y1 - ny), z_bottom))
+        v6 = bm.verts.new((x1 + nx, -(y1 + ny), z_bottom))
+        v7 = bm.verts.new((x2 + nx, -(y2 + ny), z_bottom))
+        v8 = bm.verts.new((x2 - nx, -(y2 - ny), z_bottom))
+        
+        # 6개 면 생성 (닫힌 박스)
+        try:
+            bm.faces.new([v4, v3, v2, v1])  # 상단
+            bm.faces.new([v5, v6, v7, v8])  # 하단
+            bm.faces.new([v1, v5, v8, v4])  # 앞면
+            bm.faces.new([v3, v7, v6, v2])  # 뒷면
+            bm.faces.new([v2, v6, v5, v1])  # 왼쪽
+            bm.faces.new([v4, v8, v7, v3])  # 오른쪽
+        except:
+            pass
+    
+    bm.normal_update()
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces[:])
+    
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    
+    # 매터리얼
+    mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.diffuse_color = color
+    obj.data.materials.append(mat)
+    
+    collection.objects.link(obj)
+    return obj
+
+
 def create_polyfloor(collection, name, points, color, height=0):
     """다각형 바닥 생성 (오목 다각형 지원, 개별 vertex 높이 지원)"""
     if len(points) < 3:
@@ -293,6 +368,16 @@ def process_object(collection, obj, scale):
         if len(points) >= 2:
             result = create_polywall(collection, name, points, scale, thickness, wall_height, color)
     
+    elif obj_type == 'polycliff':
+        # 폴리라인 절벽 (두 점 사이, 아래로 내려가는 벽)
+        points = obj.get('points', [])
+        thickness = obj.get('thickness', 32) * scale
+        cliff_depth = obj.get('depth', 256) * scale  # 아래로 깊이 (기본 8m)
+        from_height = obj.get('fromHeight', 0) * scale  # 시작 높이
+        
+        if len(points) >= 2:
+            result = create_polycliff(collection, name, points, scale, thickness, cliff_depth, color, from_height)
+    
     elif obj_type == 'polyfloor':
         points = obj.get('points', [])
         # 개별 z좌표 포함하여 스케일 적용
@@ -375,6 +460,42 @@ def convert_json_to_fbx(json_path, fbx_path=None):
             created += 1
     
     print(f"      생성된 오브젝트: {created}개")
+    
+    # polycliff 병합
+    cliff_objs = [o for o in collection.objects if o.name.startswith('polycliff_')]
+    if len(cliff_objs) > 1:
+        print(f"      절벽 병합 중: {len(cliff_objs)}개 → 1개")
+        bpy.ops.object.select_all(action='DESELECT')
+        for o in cliff_objs:
+            o.select_set(True)
+        bpy.context.view_layer.objects.active = cliff_objs[0]
+        bpy.ops.object.join()
+        cliff_objs[0].name = "cliffs_merged"
+    
+    # polywall 병합
+    wall_objs = [o for o in collection.objects if o.name.startswith('polywall_')]
+    if len(wall_objs) > 1:
+        print(f"      벽 병합 중: {len(wall_objs)}개 → 1개")
+        bpy.ops.object.select_all(action='DESELECT')
+        for o in wall_objs:
+            o.select_set(True)
+        bpy.context.view_layer.objects.active = wall_objs[0]
+        bpy.ops.object.join()
+        wall_objs[0].name = "walls_merged"
+    
+    # polyfloor 중 gap fill (어두운 색) 병합
+    gap_objs = [o for o in collection.objects if o.name.startswith('gap_fill_')]
+    if len(gap_objs) > 1:
+        print(f"      갭 필 병합 중: {len(gap_objs)}개 → 1개")
+        bpy.ops.object.select_all(action='DESELECT')
+        for o in gap_objs:
+            o.select_set(True)
+        bpy.context.view_layer.objects.active = gap_objs[0]
+        bpy.ops.object.join()
+        gap_objs[0].name = "gap_fills_merged"
+    
+    final_count = len(collection.objects)
+    print(f"      최종 오브젝트: {final_count}개")
     
     # FBX 내보내기
     if fbx_path is None:
