@@ -102,6 +102,12 @@ class LevelForge {
         this.pathPoints = [];
         this.pathPointsRedo = [];  // 점 단위 redo용
         
+        // Corridor tool state
+        this.corridorStart = null;  // { floor, edge, point }
+        this.corridorWaypoints = [];  // 경유점 배열 [{ x, y }]
+        this.corridorHoverEdge = null;  // 현재 호버 중인 edge
+        this.corridorWidth = 5 * 32;  // 기본 5m
+        
         // History
         this.history = [];
         this.historyIndex = -1;
@@ -616,6 +622,9 @@ class LevelForge {
             this.drawStart = snapped;
         } else if (['spawn-def', 'spawn-off', 'objective', 'item'].includes(this.currentTool)) {
             this.createMarker(snapped.x, snapped.y);
+        } else if (this.currentTool === 'corridor') {
+            // 통로 연결 도구: edge 클릭
+            this.handleCorridorClick(world.x, world.y);
         } else if (this.currentTool === 'measure') {
             this.isDrawing = true;
             this.drawStart = snapped;
@@ -652,6 +661,12 @@ class LevelForge {
         
         // snapped 좌표도 저장 (가이드라인용)
         this.mouse = { x: sx, y: sy, worldX: world.x, worldY: world.y, snappedX: snapped.x, snappedY: snapped.y };
+        
+        // Corridor 도구: edge hover 감지
+        if (this.currentTool === 'corridor') {
+            this.corridorHoverEdge = this.findNearestEdge(world.x, world.y, 20);
+            this.render();
+        }
         
         // Update coords display (미터 단위) - snapped 좌표 표시
         const mx = this.toMeters(snapped.x).toFixed(1);
@@ -870,6 +885,13 @@ class LevelForge {
             this.createPolygonFloor();
         } else if (this.currentTool === 'spline' && this.pathPoints.length >= 2) {
             this.createSplineFloor();
+        } else if (this.currentTool === 'corridor' && this.corridorStart) {
+            // 통로 더블클릭으로 완성
+            const rect = this.mainCanvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const world = this.screenToWorld(sx, sy);
+            this.handleCorridorClick(world.x, world.y, true);
         }
     }
 
@@ -915,7 +937,8 @@ class LevelForge {
         const toolKeys = {
             'v': 'select',
             'p': 'polygon',  // 다각형 바닥 그리기
-            's': 'spline'    // 스플라인 바닥
+            's': 'spline',   // 스플라인 바닥
+            'c': 'corridor'  // 통로 연결
         };
 
         if (toolKeys[e.key.toLowerCase()]) {
@@ -939,17 +962,25 @@ class LevelForge {
         if (e.key === 'Escape') {
             this.clearSelection();
             this.pathPoints = [];
+            // Corridor 시작점/경유점 취소
+            if (this.corridorStart || this.corridorWaypoints.length > 0) {
+                this.corridorStart = null;
+                this.corridorWaypoints = [];
+                this.showToast('통로 연결이 취소되었습니다');
+            }
             this.updateProps();
             this.updateObjectsList();
             this.render();
         }
 
-        // Enter로 다각형/스플라인 완성
+        // Enter로 다각형/스플라인/통로 완성
         if (e.key === 'Enter') {
             if (this.currentTool === 'polygon' && this.pathPoints.length >= 3) {
                 this.createPolygonFloor();
             } else if (this.currentTool === 'spline' && this.pathPoints.length >= 2) {
                 this.createSplineFloor();
+            } else if (this.currentTool === 'corridor' && this.corridorStart) {
+                this.finishCorridor();
             }
         }
     }
@@ -967,6 +998,11 @@ class LevelForge {
         this.pathPoints = [];
         this.pathPointsRedo = [];
         
+        // Corridor tool 초기화
+        this.corridorStart = null;
+        this.corridorWaypoints = [];
+        this.corridorHoverEdge = null;
+        
         // 그리기 도구 선택 시 선택 상태 초기화 (select/pan 제외)
         if (!['select', 'pan'].includes(tool)) {
             this.clearSelection();
@@ -974,6 +1010,11 @@ class LevelForge {
             this.selectedVertex = null;
             this.updateProps();
             this.updateObjectsList();
+        }
+        
+        // Corridor 도구 선택 시 안내
+        if (tool === 'corridor') {
+            this.showToast('바닥의 edge를 클릭하여 통로 시작점을 선택하세요');
         }
         
         document.querySelectorAll('.tool-btn, .tool-btn-wide').forEach(b => {
@@ -1321,7 +1362,7 @@ class LevelForge {
         console.log(`✅ 다각형 바닥 생성: ${points.length}개 꼭짓점`);
     }
     
-    // 스플라인 → 다각형 바닥 생성
+    // 스플라인 → 다각형 바닥 생성 (세그먼트 기반)
     createSplineFloor() {
         if (this.pathPoints.length < 2) return;
         
@@ -1330,45 +1371,70 @@ class LevelForge {
         // Deep copy - 다른 오브젝트와 점 참조 공유 방지
         const points = this.pathPoints.map(p => ({ x: p.x, y: p.y, z: p.z || 0 }));
         
-        // 스플라인 경로를 따라 양쪽 가장자리 점 계산
-        const leftEdge = [];
-        const rightEdge = [];
-        
-        for (let i = 0; i < points.length; i++) {
-            const curr = points[i];
-            const prev = points[i - 1] || curr;
-            const next = points[i + 1] || curr;
+        // 각 세그먼트의 오프셋 라인 계산
+        const segments = [];
+        for (let i = 0; i < points.length - 1; i++) {
+            const p1 = points[i];
+            const p2 = points[i + 1];
             
-            // 현재 점에서의 방향 벡터 (이전→현재 + 현재→다음의 평균)
-            let dx, dy;
-            if (i === 0) {
-                dx = next.x - curr.x;
-                dy = next.y - curr.y;
-            } else if (i === points.length - 1) {
-                dx = curr.x - prev.x;
-                dy = curr.y - prev.y;
-            } else {
-                // 중간점: 양쪽 방향의 평균
-                dx = (next.x - prev.x) / 2;
-                dy = (next.y - prev.y) / 2;
-            }
-            
-            // 정규화
+            const dx = p2.x - p1.x;
+            const dy = p2.y - p1.y;
             const len = Math.sqrt(dx * dx + dy * dy);
             if (len < 0.001) continue;
             
-            const nx = -dy / len;  // 수직 방향
-            const ny = dx / len;
+            // 수직 방향
+            const nx = -dy / len * halfW;
+            const ny = dx / len * halfW;
             
-            leftEdge.push({
-                x: Math.round(curr.x + nx * halfW),
-                y: Math.round(curr.y + ny * halfW)
-            });
-            rightEdge.push({
-                x: Math.round(curr.x - nx * halfW),
-                y: Math.round(curr.y - ny * halfW)
+            segments.push({
+                left1: { x: p1.x + nx, y: p1.y + ny },
+                left2: { x: p2.x + nx, y: p2.y + ny },
+                right1: { x: p1.x - nx, y: p1.y - ny },
+                right2: { x: p2.x - nx, y: p2.y - ny }
             });
         }
+        
+        if (segments.length === 0) {
+            this.pathPoints = [];
+            this.render();
+            return;
+        }
+        
+        // 왼쪽/오른쪽 가장자리 점들 (교차점 계산)
+        const leftEdge = [segments[0].left1];
+        const rightEdge = [segments[0].right1];
+        
+        for (let i = 0; i < segments.length - 1; i++) {
+            const curr = segments[i];
+            const next = segments[i + 1];
+            
+            // 왼쪽 교차점
+            const leftInt = this.lineIntersection(
+                curr.left1, curr.left2,
+                next.left1, next.left2
+            );
+            if (leftInt) {
+                leftEdge.push({ x: Math.round(leftInt.x), y: Math.round(leftInt.y) });
+            } else {
+                leftEdge.push({ x: Math.round(curr.left2.x), y: Math.round(curr.left2.y) });
+            }
+            
+            // 오른쪽 교차점
+            const rightInt = this.lineIntersection(
+                curr.right1, curr.right2,
+                next.right1, next.right2
+            );
+            if (rightInt) {
+                rightEdge.push({ x: Math.round(rightInt.x), y: Math.round(rightInt.y) });
+            } else {
+                rightEdge.push({ x: Math.round(curr.right2.x), y: Math.round(curr.right2.y) });
+            }
+        }
+        
+        // 마지막 점 추가
+        const lastSeg = segments[segments.length - 1];
+        leftEdge.push({ x: Math.round(lastSeg.left2.x), y: Math.round(lastSeg.left2.y) });
+        rightEdge.push({ x: Math.round(lastSeg.right2.x), y: Math.round(lastSeg.right2.y) });
         
         // 다각형 점 배열 생성 (왼쪽 + 오른쪽 역순)
         const polyPoints = [...leftEdge, ...rightEdge.reverse()];
@@ -1633,6 +1699,61 @@ class LevelForge {
         const saturation = 50;
         const lightness = Math.min(65, Math.max(35, 45 + height * 6));
         return `hsla(${baseHue}, ${saturation}%, ${lightness}%, 0.5)`;
+    }
+    
+    // HSLA 색상을 Hex로 변환 (color picker용)
+    floorColorToHex(color) {
+        if (!color) return '#4a90a4';
+        // hsla나 rgba 파싱
+        const match = color.match(/hsla?\((\d+),\s*(\d+)%,\s*(\d+)%/);
+        if (match) {
+            const h = parseInt(match[1]) / 360;
+            const s = parseInt(match[2]) / 100;
+            const l = parseInt(match[3]) / 100;
+            
+            const hue2rgb = (p, q, t) => {
+                if (t < 0) t += 1;
+                if (t > 1) t -= 1;
+                if (t < 1/6) return p + (q - p) * 6 * t;
+                if (t < 1/2) return q;
+                if (t < 2/3) return p + (q - p) * (2/3 - t) * 6;
+                return p;
+            };
+            
+            const q = l < 0.5 ? l * (1 + s) : l + s - l * s;
+            const p = 2 * l - q;
+            const r = Math.round(hue2rgb(p, q, h + 1/3) * 255);
+            const g = Math.round(hue2rgb(p, q, h) * 255);
+            const b = Math.round(hue2rgb(p, q, h - 1/3) * 255);
+            
+            return '#' + [r, g, b].map(x => x.toString(16).padStart(2, '0')).join('');
+        }
+        return '#4a90a4';
+    }
+    
+    // Hex를 HSLA 색상으로 변환
+    hexToFloorColor(hex) {
+        const r = parseInt(hex.slice(1, 3), 16) / 255;
+        const g = parseInt(hex.slice(3, 5), 16) / 255;
+        const b = parseInt(hex.slice(5, 7), 16) / 255;
+        
+        const max = Math.max(r, g, b);
+        const min = Math.min(r, g, b);
+        let h, s, l = (max + min) / 2;
+        
+        if (max === min) {
+            h = s = 0;
+        } else {
+            const d = max - min;
+            s = l > 0.5 ? d / (2 - max - min) : d / (max + min);
+            switch (max) {
+                case r: h = ((g - b) / d + (g < b ? 6 : 0)) / 6; break;
+                case g: h = ((b - r) / d + 2) / 6; break;
+                case b: h = ((r - g) / d + 4) / 6; break;
+            }
+        }
+        
+        return `hsla(${Math.round(h * 360)}, ${Math.round(s * 100)}%, ${Math.round(l * 100)}%, 0.6)`;
     }
     
     updateHeightButtons() {
@@ -1945,6 +2066,11 @@ class LevelForge {
 
         ctx.restore();
         
+        // Corridor 도구 하이라이트
+        if (this.currentTool === 'corridor') {
+            this.renderCorridorPreview();
+        }
+        
         // AI 미리보기 오버레이 (항상 최상단에 그리기)
         if (this.aiPendingObjects && this.aiPendingObjects.length > 0) {
             this.renderAIPreviewOverlay();
@@ -1952,6 +2078,98 @@ class LevelForge {
 
         // Update object count
         document.getElementById('objectCount').textContent = this.objects.length;
+    }
+    
+    // Corridor 도구 미리보기 렌더링
+    renderCorridorPreview() {
+        const ctx = this.ctx;
+        ctx.save();
+        ctx.translate(this.camera.x, this.camera.y);
+        ctx.scale(this.camera.zoom, this.camera.zoom);
+        
+        // 호버 중인 edge 하이라이트
+        if (this.corridorHoverEdge) {
+            const edge = this.corridorHoverEdge;
+            ctx.strokeStyle = '#3498db';
+            ctx.lineWidth = 4 / this.camera.zoom;
+            ctx.beginPath();
+            ctx.moveTo(edge.p1.x, edge.p1.y);
+            ctx.lineTo(edge.p2.x, edge.p2.y);
+            ctx.stroke();
+            
+            // 연결점 표시
+            ctx.fillStyle = '#3498db';
+            ctx.beginPath();
+            ctx.arc(edge.point.x, edge.point.y, 8 / this.camera.zoom, 0, Math.PI * 2);
+            ctx.fill();
+        }
+        
+        // 시작점이 선택되어 있으면 표시
+        if (this.corridorStart) {
+            const start = this.corridorStart;
+            const waypoints = this.corridorWaypoints || [];
+            
+            // 시작 edge
+            ctx.strokeStyle = '#2ecc71';
+            ctx.lineWidth = 4 / this.camera.zoom;
+            ctx.beginPath();
+            ctx.moveTo(start.p1.x, start.p1.y);
+            ctx.lineTo(start.p2.x, start.p2.y);
+            ctx.stroke();
+            
+            // 시작점
+            ctx.fillStyle = '#2ecc71';
+            ctx.beginPath();
+            ctx.arc(start.point.x, start.point.y, 10 / this.camera.zoom, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 경유점들 및 경로 선
+            ctx.strokeStyle = '#f39c12';
+            ctx.lineWidth = 3 / this.camera.zoom;
+            ctx.beginPath();
+            ctx.moveTo(start.point.x, start.point.y);
+            
+            waypoints.forEach((wp, i) => {
+                ctx.lineTo(wp.x, wp.y);
+            });
+            
+            // 마지막 경유점(또는 시작점)에서 마우스까지
+            if (this.mouse && this.mouse.worldX !== undefined) {
+                ctx.lineTo(this.mouse.worldX, this.mouse.worldY);
+            }
+            ctx.stroke();
+            
+            // 경유점 표시
+            ctx.fillStyle = '#f39c12';
+            waypoints.forEach((wp, i) => {
+                ctx.beginPath();
+                ctx.arc(wp.x, wp.y, 8 / this.camera.zoom, 0, Math.PI * 2);
+                ctx.fill();
+                
+                // 번호 표시
+                ctx.fillStyle = '#fff';
+                ctx.font = `${14 / this.camera.zoom}px sans-serif`;
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText((i + 1).toString(), wp.x, wp.y);
+                ctx.fillStyle = '#f39c12';
+            });
+            
+            // 가이드 점선 (마지막 점에서 마우스까지)
+            if (this.mouse && this.mouse.worldX !== undefined) {
+                const lastPoint = waypoints.length > 0 ? waypoints[waypoints.length - 1] : start.point;
+                ctx.strokeStyle = 'rgba(243, 156, 18, 0.5)';
+                ctx.lineWidth = 2 / this.camera.zoom;
+                ctx.setLineDash([10 / this.camera.zoom, 10 / this.camera.zoom]);
+                ctx.beginPath();
+                ctx.moveTo(lastPoint.x, lastPoint.y);
+                ctx.lineTo(this.mouse.worldX, this.mouse.worldY);
+                ctx.stroke();
+                ctx.setLineDash([]);
+            }
+        }
+        
+        ctx.restore();
     }
     
     renderAIPreviewOverlay() {
@@ -2780,12 +2998,17 @@ class LevelForge {
         avgHeight /= obj.points.length;
         hasHeightVariation = (maxZ - minZ) > 0.1;
         
-        // 높이에 따른 색상 변경 (등고 표현) - 항상 높이 기반 색상 사용
-        // 높이 0: 청록색, 높으면 노랑/주황, 낮으면 파랑
-        const hue = avgHeight >= 0 ? 180 - avgHeight * 20 : 200 - avgHeight * 10; // 0=청록(180), 높으면 노랑(60), 낮으면 파랑(220)
-        const clampedHue = Math.min(220, Math.max(40, hue));
-        const lightness = Math.min(55, Math.max(30, 40 + avgHeight * 2));
-        const baseColor = `hsla(${clampedHue}, 50%, ${lightness}%, 0.6)`;
+        // 색상 결정: 사용자 지정 색상 우선, 없으면 높이 기반
+        let baseColor;
+        if (obj.color) {
+            baseColor = obj.color;
+        } else {
+            // 높이에 따른 색상 변경 (등고 표현)
+            const hue = avgHeight >= 0 ? 180 - avgHeight * 20 : 200 - avgHeight * 10;
+            const clampedHue = Math.min(220, Math.max(40, hue));
+            const lightness = Math.min(55, Math.max(30, 40 + avgHeight * 2));
+            baseColor = `hsla(${clampedHue}, 50%, ${lightness}%, 0.6)`;
+        }
         
         // 채우기
         ctx.fillStyle = baseColor;
@@ -3118,147 +3341,211 @@ class LevelForge {
         }
     }
     
-    // 스플라인 프리뷰 (두께 있는 경로)
+    // 스플라인 프리뷰 (두께 있는 경로) - 확정된 점만 폴리곤, 마우스는 확장 미리보기
     drawSplinePreview(ctx) {
-        // 마우스 위치까지 포함한 포인트 배열
         const cursorX = this.mouse.snappedX !== undefined ? this.mouse.snappedX : this.mouse.worldX;
         const cursorY = this.mouse.snappedY !== undefined ? this.mouse.snappedY : this.mouse.worldY;
-        
-        // 마우스 위치가 유효할 때만 추가 (0,0이 아닌 경우)
         const hasValidCursor = (cursorX !== 0 || cursorY !== 0) && cursorX !== undefined;
-        const points = hasValidCursor ? [...this.pathPoints, { x: cursorX, y: cursorY }] : [...this.pathPoints];
         
-        if (points.length < 2) return;  // 최소 2점 필요
-        
+        // 확정된 점들 (마우스 제외)
+        const confirmedPoints = [...this.pathPoints];
         const width = this.splineWidth;
         const halfW = width / 2;
         
-        // 양쪽 가장자리 계산
-        const leftEdge = [];
-        const rightEdge = [];
-        
-        for (let i = 0; i < points.length; i++) {
-            const curr = points[i];
-            const prev = points[i - 1] || curr;
-            const next = points[i + 1] || curr;
-            
-            let dx, dy;
-            if (i === 0) {
-                dx = next.x - curr.x;
-                dy = next.y - curr.y;
-            } else if (i === points.length - 1) {
-                dx = curr.x - prev.x;
-                dy = curr.y - prev.y;
-            } else {
-                dx = (next.x - prev.x) / 2;
-                dy = (next.y - prev.y) / 2;
+        // 확정된 점이 2개 이상일 때만 폴리곤 그리기
+        if (confirmedPoints.length >= 2) {
+            // 각 세그먼트의 오프셋 라인 계산
+            const segments = [];
+            for (let i = 0; i < confirmedPoints.length - 1; i++) {
+                const p1 = confirmedPoints[i];
+                const p2 = confirmedPoints[i + 1];
+                
+                const dx = p2.x - p1.x;
+                const dy = p2.y - p1.y;
+                const len = Math.sqrt(dx * dx + dy * dy);
+                if (len < 0.001) continue;
+                
+                const nx = -dy / len * halfW;
+                const ny = dx / len * halfW;
+                
+                segments.push({
+                    left1: { x: p1.x + nx, y: p1.y + ny },
+                    left2: { x: p2.x + nx, y: p2.y + ny },
+                    right1: { x: p1.x - nx, y: p1.y - ny },
+                    right2: { x: p2.x - nx, y: p2.y - ny }
+                });
             }
             
-            const len = Math.sqrt(dx * dx + dy * dy);
-            if (len < 0.001) continue;
-            
-            const nx = -dy / len;
-            const ny = dx / len;
-            
-            leftEdge.push({ x: curr.x + nx * halfW, y: curr.y + ny * halfW });
-            rightEdge.push({ x: curr.x - nx * halfW, y: curr.y - ny * halfW });
+            if (segments.length > 0) {
+                // 왼쪽/오른쪽 가장자리 점들 (교차점 계산)
+                const leftEdge = [segments[0].left1];
+                const rightEdge = [segments[0].right1];
+                
+                for (let i = 0; i < segments.length - 1; i++) {
+                    const curr = segments[i];
+                    const next = segments[i + 1];
+                    
+                    const leftInt = this.lineIntersection(curr.left1, curr.left2, next.left1, next.left2);
+                    leftEdge.push(leftInt || curr.left2);
+                    
+                    const rightInt = this.lineIntersection(curr.right1, curr.right2, next.right1, next.right2);
+                    rightEdge.push(rightInt || curr.right2);
+                }
+                
+                leftEdge.push(segments[segments.length - 1].left2);
+                rightEdge.push(segments[segments.length - 1].right2);
+                
+                // 다각형 채우기
+                ctx.beginPath();
+                ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
+                for (let i = 1; i < leftEdge.length; i++) {
+                    ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
+                }
+                for (let i = rightEdge.length - 1; i >= 0; i--) {
+                    ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
+                }
+                ctx.closePath();
+                ctx.fillStyle = 'hsla(35, 70%, 45%, 0.35)';
+                ctx.fill();
+                
+                // 가이드선 (좌우 경계)
+                ctx.strokeStyle = '#4ecdc4';
+                ctx.lineWidth = 2;
+                ctx.setLineDash([8, 4]);
+                
+                ctx.beginPath();
+                ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
+                for (let i = 1; i < leftEdge.length; i++) ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
+                ctx.stroke();
+                
+                ctx.beginPath();
+                ctx.moveTo(rightEdge[0].x, rightEdge[0].y);
+                for (let i = 1; i < rightEdge.length; i++) ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // 마우스까지 확장 미리보기 (반투명)
+                if (hasValidCursor) {
+                    const lastSeg = segments[segments.length - 1];
+                    const lastLeft = leftEdge[leftEdge.length - 1];
+                    const lastRight = rightEdge[rightEdge.length - 1];
+                    const lastPoint = confirmedPoints[confirmedPoints.length - 1];
+                    
+                    // 마지막 점 → 마우스 방향
+                    const dx = cursorX - lastPoint.x;
+                    const dy = cursorY - lastPoint.y;
+                    const len = Math.sqrt(dx * dx + dy * dy);
+                    
+                    if (len > 1) {
+                        const nx = -dy / len * halfW;
+                        const ny = dx / len * halfW;
+                        
+                        const cursorLeft = { x: cursorX + nx, y: cursorY + ny };
+                        const cursorRight = { x: cursorX - nx, y: cursorY - ny };
+                        
+                        // 확장 영역 (더 투명하게)
+                        ctx.beginPath();
+                        ctx.moveTo(lastLeft.x, lastLeft.y);
+                        ctx.lineTo(cursorLeft.x, cursorLeft.y);
+                        ctx.lineTo(cursorRight.x, cursorRight.y);
+                        ctx.lineTo(lastRight.x, lastRight.y);
+                        ctx.closePath();
+                        ctx.fillStyle = 'hsla(35, 70%, 45%, 0.2)';
+                        ctx.fill();
+                        
+                        // 확장 가이드선
+                        ctx.strokeStyle = 'rgba(78, 205, 196, 0.5)';
+                        ctx.lineWidth = 2;
+                        ctx.setLineDash([8, 4]);
+                        ctx.beginPath();
+                        ctx.moveTo(lastLeft.x, lastLeft.y);
+                        ctx.lineTo(cursorLeft.x, cursorLeft.y);
+                        ctx.stroke();
+                        ctx.beginPath();
+                        ctx.moveTo(lastRight.x, lastRight.y);
+                        ctx.lineTo(cursorRight.x, cursorRight.y);
+                        ctx.stroke();
+                        ctx.setLineDash([]);
+                    }
+                }
+                
+                // 너비 표시선 (첫 점에서)
+                ctx.beginPath();
+                ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
+                ctx.lineTo(rightEdge[0].x, rightEdge[0].y);
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 2]);
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // 너비 레이블
+                const midX = (leftEdge[0].x + rightEdge[0].x) / 2;
+                const midY = (leftEdge[0].y + rightEdge[0].y) / 2;
+                const widthM = Math.round(width / this.gridSize);
+                
+                ctx.fillStyle = '#1a1a2e';
+                ctx.fillRect(midX - 18, midY - 10, 36, 20);
+                ctx.strokeStyle = '#4ecdc4';
+                ctx.lineWidth = 1;
+                ctx.strokeRect(midX - 18, midY - 10, 36, 20);
+                
+                ctx.fillStyle = '#4ecdc4';
+                ctx.font = 'bold 12px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(`${widthM}m`, midX, midY);
+                ctx.textAlign = 'left';
+            }
         }
         
-        // 다각형 채우기
-        if (leftEdge.length >= 2) {
+        // 중심선 (확정된 점들)
+        if (confirmedPoints.length >= 1) {
             ctx.beginPath();
-            ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
-            for (let i = 1; i < leftEdge.length; i++) {
-                ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
+            ctx.moveTo(confirmedPoints[0].x, confirmedPoints[0].y);
+            for (let i = 1; i < confirmedPoints.length; i++) {
+                ctx.lineTo(confirmedPoints[i].x, confirmedPoints[i].y);
             }
-            for (let i = rightEdge.length - 1; i >= 0; i--) {
-                ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
+            // 마우스까지 연장
+            if (hasValidCursor) {
+                ctx.lineTo(cursorX, cursorY);
             }
-            ctx.closePath();
-            
-            ctx.fillStyle = 'hsla(35, 70%, 45%, 0.35)';
-            ctx.fill();
-        }
-        
-        // 가이드선 (좌우 경계)
-        if (leftEdge.length >= 2) {
-            // 왼쪽 경계선
-            ctx.beginPath();
-            ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
-            for (let i = 1; i < leftEdge.length; i++) {
-                ctx.lineTo(leftEdge[i].x, leftEdge[i].y);
-            }
-            ctx.strokeStyle = '#4ecdc4';
+            ctx.strokeStyle = '#f39c12';
             ctx.lineWidth = 2;
-            ctx.setLineDash([8, 4]);
             ctx.stroke();
-            
-            // 오른쪽 경계선
-            ctx.beginPath();
-            ctx.moveTo(rightEdge[0].x, rightEdge[0].y);
-            for (let i = 1; i < rightEdge.length; i++) {
-                ctx.lineTo(rightEdge[i].x, rightEdge[i].y);
-            }
-            ctx.stroke();
-            ctx.setLineDash([]);
         }
         
-        // 중심선
-        ctx.beginPath();
-        ctx.moveTo(points[0].x, points[0].y);
-        for (let i = 1; i < points.length; i++) {
-            ctx.lineTo(points[i].x, points[i].y);
-        }
-        ctx.strokeStyle = '#f39c12';
-        ctx.lineWidth = 2;
-        ctx.stroke();
-        
-        // 너비 표시선 (첫 점에서)
-        if (leftEdge.length > 0 && rightEdge.length > 0) {
+        // 확정된 꼭짓점 표시
+        confirmedPoints.forEach((p, i) => {
             ctx.beginPath();
-            ctx.moveTo(leftEdge[0].x, leftEdge[0].y);
-            ctx.lineTo(rightEdge[0].x, rightEdge[0].y);
-            ctx.strokeStyle = '#fff';
-            ctx.lineWidth = 1;
-            ctx.setLineDash([4, 2]);
-            ctx.stroke();
-            ctx.setLineDash([]);
-            
-            // 너비 레이블
-            const midX = (leftEdge[0].x + rightEdge[0].x) / 2;
-            const midY = (leftEdge[0].y + rightEdge[0].y) / 2;
-            const widthM = Math.round(width / this.gridSize);
-            
-            ctx.fillStyle = '#1a1a2e';
-            ctx.fillRect(midX - 18, midY - 10, 36, 20);
-            ctx.strokeStyle = '#4ecdc4';
-            ctx.lineWidth = 1;
-            ctx.strokeRect(midX - 18, midY - 10, 36, 20);
-            
-            ctx.fillStyle = '#4ecdc4';
-            ctx.font = 'bold 12px sans-serif';
-            ctx.textAlign = 'center';
-            ctx.textBaseline = 'middle';
-            ctx.fillText(`${widthM}m`, midX, midY);
-            ctx.textAlign = 'left';
-        }
-        
-        // 꼭짓점 표시 (마지막은 마우스 위치 - 다른 스타일)
-        points.forEach((p, i) => {
-            const isMousePos = i === points.length - 1;
-            ctx.beginPath();
-            ctx.arc(p.x, p.y, isMousePos ? 5 : 6, 0, Math.PI * 2);
-            ctx.fillStyle = i === 0 ? '#f39c12' : (isMousePos ? 'rgba(255,255,255,0.5)' : '#fff');
+            ctx.arc(p.x, p.y, 6, 0, Math.PI * 2);
+            ctx.fillStyle = i === 0 ? '#f39c12' : '#fff';
             ctx.fill();
-            ctx.strokeStyle = isMousePos ? '#f39c12' : '#333';
-            ctx.lineWidth = isMousePos ? 2 : 1;
+            ctx.strokeStyle = '#333';
+            ctx.lineWidth = 1;
             ctx.stroke();
         });
         
-        // 점 개수 표시 (마우스 위치 제외)
-        ctx.fillStyle = '#fff';
-        ctx.font = 'bold 12px sans-serif';
-        ctx.fillText(`${this.pathPoints.length}점`, points[0].x + 10, points[0].y - 20);
+        
+        // 점 개수 표시
+        if (confirmedPoints.length > 0) {
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 12px sans-serif';
+            ctx.fillText(`${confirmedPoints.length}점`, confirmedPoints[0].x + 10, confirmedPoints[0].y - 20);
+        }
+    }
+    
+    // 두 직선의 교차점 계산
+    lineIntersection(p1, p2, p3, p4) {
+        const d = (p1.x - p2.x) * (p3.y - p4.y) - (p1.y - p2.y) * (p3.x - p4.x);
+        if (Math.abs(d) < 0.0001) return null; // 평행
+        
+        const t = ((p1.x - p3.x) * (p3.y - p4.y) - (p1.y - p3.y) * (p3.x - p4.x)) / d;
+        
+        return {
+            x: p1.x + t * (p2.x - p1.x),
+            y: p1.y + t * (p2.y - p1.y)
+        };
     }
     
     // 스플라인 너비 레이블 업데이트
@@ -4109,6 +4396,17 @@ class LevelForge {
                         <input type="number" id="propFloorHeight" value="${obj.type === 'polyfloor' ? (obj.points && obj.points[0] ? (obj.points[0].z || 0) : 0) : (obj.floorHeight || 0)}" step="0.5">
                         ${obj.type === 'polyfloor' ? '<small style="color:#888;font-size:10px;">모든 점 높이 일괄 변경</small>' : ''}
                     </div>
+                    <div class="props-field">
+                        <label>바닥 색상</label>
+                        <div class="floor-color-btns">
+                            <button class="color-btn" data-color="normal" style="background:hsla(200,60%,40%,0.8)" title="일반 통로"></button>
+                            <button class="color-btn" data-color="blocked" style="background:hsla(0,60%,40%,0.8)" title="막힌 길"></button>
+                            <button class="color-btn" data-color="danger" style="background:hsla(30,80%,50%,0.8)" title="위험 구역"></button>
+                            <button class="color-btn" data-color="safe" style="background:hsla(120,50%,40%,0.8)" title="안전 구역"></button>
+                            <button class="color-btn" data-color="highlight" style="background:hsla(280,60%,50%,0.8)" title="중요 구역"></button>
+                            <input type="color" id="propCustomColor" value="${this.floorColorToHex(obj.color)}" title="커스텀 색상">
+                        </div>
+                    </div>
                     ` : ''}
                     ${obj.type === 'ramp' ? `
                     <div class="props-field-row">
@@ -4229,6 +4527,33 @@ class LevelForge {
                 if (count > 0) {
                     alert(`${count}개의 바닥 영역이 생성되었습니다.`);
                 }
+            });
+            
+            // 바닥 색상 버튼
+            document.querySelectorAll('.floor-color-btns .color-btn').forEach(btn => {
+                btn.addEventListener('click', () => {
+                    const colorType = btn.dataset.color;
+                    const colors = {
+                        normal: 'hsla(200, 60%, 40%, 0.6)',
+                        blocked: 'hsla(0, 60%, 35%, 0.7)',
+                        danger: 'hsla(30, 80%, 45%, 0.7)',
+                        safe: 'hsla(120, 50%, 35%, 0.6)',
+                        highlight: 'hsla(280, 60%, 45%, 0.7)'
+                    };
+                    obj.color = colors[colorType];
+                    obj.colorType = colorType;  // 타입 저장
+                    this.saveState();
+                    this.render();
+                });
+            });
+            
+            // 커스텀 색상
+            const customColorInput = document.getElementById('propCustomColor');
+            customColorInput?.addEventListener('change', e => {
+                obj.color = this.hexToFloorColor(e.target.value);
+                obj.colorType = 'custom';
+                this.saveState();
+                this.render();
             });
         } else {
             // 선택된 것 중 벽이 있는지 확인
@@ -5694,6 +6019,10 @@ def create_floor(name, x, y, w, h, color, height=0):
     obj.scale = (w, h, 1)
     bpy.ops.object.transform_apply(scale=True)
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     bpy.context.scene.collection.objects.unlink(obj)
@@ -5707,6 +6036,10 @@ def create_wall_box(name, x, y, w, d, h, color):
     obj.scale = (w, d, h)
     bpy.ops.object.transform_apply(scale=True)
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     bpy.context.scene.collection.objects.unlink(obj)
@@ -5723,13 +6056,43 @@ def create_polyfloor(name, points, color, height=0):
     bm.to_mesh(mesh)
     bm.free()
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     collection.objects.link(obj)
     return obj
 
-def hex_to_rgba(hex_color, alpha=1.0):
-    hex_color = hex_color.lstrip('#')
+def hex_to_rgba(color_str, alpha=1.0):
+    import re
+    # HSLA 포맷 처리: hsla(h, s%, l%, a) 또는 hsl(h, s%, l%)
+    hsla_match = re.match(r'hsla?\\(\\s*(\\d+),\\s*(\\d+)%,\\s*(\\d+)%(?:,\\s*([\\d.]+))?\\)', color_str)
+    if hsla_match:
+        h = int(hsla_match.group(1)) / 360.0
+        s = int(hsla_match.group(2)) / 100.0
+        l = int(hsla_match.group(3)) / 100.0
+        a = float(hsla_match.group(4)) if hsla_match.group(4) else alpha
+        # HSL to RGB
+        if s == 0:
+            r = g = b = l
+        else:
+            def hue2rgb(p, q, t):
+                if t < 0: t += 1
+                if t > 1: t -= 1
+                if t < 1/6: return p + (q - p) * 6 * t
+                if t < 1/2: return q
+                if t < 2/3: return p + (q - p) * (2/3 - t) * 6
+                return p
+            q = l * (1 + s) if l < 0.5 else l + s - l * s
+            p = 2 * l - q
+            r = hue2rgb(p, q, h + 1/3)
+            g = hue2rgb(p, q, h)
+            b = hue2rgb(p, q, h - 1/3)
+        return (r, g, b, a)
+    # HEX 포맷 처리
+    hex_color = color_str.lstrip('#')
     if len(hex_color) == 6:
         r, g, b = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
         return (r, g, b, alpha)
@@ -5746,7 +6109,8 @@ WALL_HEIGHT = ${wallHeight}
             const w = (obj.width || 0) * SCALE;
             const h = (obj.height || 0) * SCALE;
             const label = obj.label || obj.type;
-            const color = obj.color || '#808080';
+            // HSLA를 HEX로 변환해서 전달
+            const color = this.floorColorToHex(obj.color) || '#808080';
             
             if (obj.type === 'floor-area') {
                 const fh = obj.floorHeight || 0;
@@ -5776,14 +6140,17 @@ bpy.ops.object.select_all(action='DESELECT')
 for obj in collection.objects:
     obj.select_set(True)
 
-# FBX 내보내기
+# FBX 내보내기 (머티리얼 포함)
 bpy.ops.export_scene.fbx(
     filepath=fbx_path,
     use_selection=True,
     apply_scale_options='FBX_SCALE_ALL',
     bake_space_transform=True,
     object_types={'MESH'},
-    use_mesh_modifiers=True
+    use_mesh_modifiers=True,
+    path_mode='AUTO',
+    embed_textures=False,
+    mesh_smooth_type='FACE'
 )
 
 print(f"\\n[SUCCESS] FBX 생성 완료!")
@@ -5963,8 +6330,12 @@ def create_floor(name, x, y, w, h, color, height=0):
     obj.scale = (w, h, 1)
     bpy.ops.object.transform_apply(scale=True)
     
-    # 재질 적용
+    # 재질 적용 (노드 사용)
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     
@@ -5982,6 +6353,10 @@ def create_wall_box(name, x, y, w, d, h, color):
     bpy.ops.object.transform_apply(scale=True)
     
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     
@@ -6004,6 +6379,10 @@ def create_diagonal_wall(name, x1, y1, x2, y2, thickness, height, color):
     bpy.ops.object.transform_apply(scale=True, rotation=True)
     
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     
@@ -6011,9 +6390,35 @@ def create_diagonal_wall(name, x1, y1, x2, y2, thickness, height, color):
     collection.objects.link(obj)
     return obj
 
-def hex_to_rgba(hex_color, alpha=1.0):
-    """HEX 색상을 RGBA로 변환"""
-    hex_color = hex_color.lstrip('#')
+def hex_to_rgba(color_str, alpha=1.0):
+    """HEX 또는 HSLA 색상을 RGBA로 변환"""
+    import re
+    # HSLA 포맷 처리: hsla(h, s%, l%, a) 또는 hsl(h, s%, l%)
+    hsla_match = re.match(r'hsla?\\(\\s*(\\d+),\\s*(\\d+)%,\\s*(\\d+)%(?:,\\s*([\\d.]+))?\\)', color_str)
+    if hsla_match:
+        h = int(hsla_match.group(1)) / 360.0
+        s = int(hsla_match.group(2)) / 100.0
+        l = int(hsla_match.group(3)) / 100.0
+        a = float(hsla_match.group(4)) if hsla_match.group(4) else alpha
+        # HSL to RGB
+        if s == 0:
+            r = g = b = l
+        else:
+            def hue2rgb(p, q, t):
+                if t < 0: t += 1
+                if t > 1: t -= 1
+                if t < 1/6: return p + (q - p) * 6 * t
+                if t < 1/2: return q
+                if t < 2/3: return p + (q - p) * (2/3 - t) * 6
+                return p
+            q = l * (1 + s) if l < 0.5 else l + s - l * s
+            p = 2 * l - q
+            r = hue2rgb(p, q, h + 1/3)
+            g = hue2rgb(p, q, h)
+            b = hue2rgb(p, q, h - 1/3)
+        return (r, g, b, a)
+    # HEX 포맷 처리
+    hex_color = color_str.lstrip('#')
     if len(hex_color) == 6:
         r, g, b = tuple(int(hex_color[i:i+2], 16) / 255.0 for i in (0, 2, 4))
         return (r, g, b, alpha)
@@ -6034,8 +6439,12 @@ def create_polyfloor(name, points, color, height=0):
     bm.to_mesh(mesh)
     bm.free()
     
-    # 재질 적용
+    # 재질 적용 (노드 사용해서 FBX에 색상 포함)
     mat = bpy.data.materials.new(name=f"{name}_mat")
+    mat.use_nodes = True
+    bsdf = mat.node_tree.nodes.get('Principled BSDF')
+    if bsdf:
+        bsdf.inputs['Base Color'].default_value = color
     mat.diffuse_color = color
     obj.data.materials.append(mat)
     
@@ -6054,7 +6463,8 @@ WALL_HEIGHT = ${wallHeight}
             const w = (obj.width || 0) * SCALE;
             const h = (obj.height || 0) * SCALE;
             const name = `${obj.type}_${obj.id}`;
-            const color = obj.color || '#808080';
+            // HSLA를 HEX로 변환
+            const color = this.floorColorToHex(obj.color) || '#808080';
             const label = obj.label || obj.type;
             
             if (obj.type === 'floor-area') {
@@ -7778,6 +8188,296 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
         return pairs.slice(0, 5);  // 상위 5개
     }
     
+    // ========== 인터렉티브 통로 연결 ==========
+    
+    // 가장 가까운 edge 찾기
+    findNearestEdge(x, y, maxDist = 20) {
+        const floors = this.objects.filter(o => 
+            (o.type === 'polyfloor' && o.points?.length >= 3) ||
+            (o.type === 'spawn-def' || o.type === 'spawn-off' || o.type === 'objective')
+        );
+        
+        let nearest = null;
+        let minDist = maxDist * this.camera.zoom;  // 화면 픽셀 기준
+        
+        for (const floor of floors) {
+            // points 가져오기 (마커는 사각형으로 변환)
+            let pts;
+            if (floor.points) {
+                pts = floor.points;
+            } else if (floor.width && floor.height) {
+                pts = [
+                    { x: floor.x, y: floor.y },
+                    { x: floor.x + floor.width, y: floor.y },
+                    { x: floor.x + floor.width, y: floor.y + floor.height },
+                    { x: floor.x, y: floor.y + floor.height }
+                ];
+            } else {
+                continue;
+            }
+            
+            // 각 edge와의 거리
+            for (let i = 0; i < pts.length; i++) {
+                const p1 = pts[i];
+                const p2 = pts[(i + 1) % pts.length];
+                
+                // 점과 선분 사이의 거리 및 최근접점
+                const result = this.pointToSegmentDistance(x, y, p1.x, p1.y, p2.x, p2.y);
+                
+                if (result.dist < minDist) {
+                    minDist = result.dist;
+                    nearest = {
+                        floor: floor,
+                        p1: p1,
+                        p2: p2,
+                        point: { x: result.nearX, y: result.nearY },
+                        edgeIndex: i
+                    };
+                }
+            }
+        }
+        
+        return nearest;
+    }
+    
+    // 점과 선분 사이의 거리 계산
+    pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const lenSq = dx * dx + dy * dy;
+        
+        let t = 0;
+        if (lenSq > 0) {
+            t = Math.max(0, Math.min(1, ((px - x1) * dx + (py - y1) * dy) / lenSq));
+        }
+        
+        const nearX = x1 + t * dx;
+        const nearY = y1 + t * dy;
+        const dist = Math.sqrt((px - nearX) ** 2 + (py - nearY) ** 2);
+        
+        return { dist, nearX, nearY, t };
+    }
+    
+    // 통로 연결 클릭 핸들러 (경유점 지원)
+    handleCorridorClick(x, y, isDoubleClick = false) {
+        const edge = this.findNearestEdge(x, y, 30);
+        const width = (parseInt(document.getElementById('splineWidth')?.value) || 160);
+        const snapped = this.snap(x, y);
+        
+        if (!this.corridorStart) {
+            // 시작점 선택 (edge 필요)
+            if (!edge) {
+                this.showToast('바닥의 edge를 클릭하여 시작점을 선택하세요');
+                return;
+            }
+            this.corridorStart = edge;
+            this.corridorWaypoints = [];
+            this.showToast('시작점 선택됨. 경유점을 클릭하거나, 끝 edge를 더블클릭/Enter');
+            this.render();
+        } else if (edge && (isDoubleClick || edge.floor.id !== this.corridorStart.floor.id)) {
+            // 끝점 선택 (edge 클릭 + 더블클릭 또는 다른 바닥)
+            if (edge.floor.id === this.corridorStart.floor.id && !isDoubleClick) {
+                // 같은 바닥이고 더블클릭이 아니면 경유점 추가
+                this.corridorWaypoints.push({ x: snapped.x, y: snapped.y });
+                this.showToast(`경유점 ${this.corridorWaypoints.length}개. 계속 클릭하거나 끝 edge에서 더블클릭/Enter`);
+                this.render();
+                return;
+            }
+            
+            // 통로 생성
+            this.createInteractiveCorridor(this.corridorStart, edge, width, this.corridorWaypoints);
+            
+            // 리셋
+            this.corridorStart = null;
+            this.corridorWaypoints = [];
+            this.showToast('통로가 생성되었습니다');
+        } else {
+            // 경유점 추가 (빈 공간 클릭)
+            this.corridorWaypoints.push({ x: snapped.x, y: snapped.y });
+            this.showToast(`경유점 ${this.corridorWaypoints.length}개. 계속 클릭하거나 끝 edge 클릭`);
+            this.render();
+        }
+    }
+    
+    // 통로 완성 (Enter 키)
+    finishCorridor() {
+        if (!this.corridorStart) return;
+        
+        const edge = this.corridorHoverEdge;
+        if (edge && edge.floor.id !== this.corridorStart.floor.id) {
+            const width = (parseInt(document.getElementById('splineWidth')?.value) || 160);
+            this.createInteractiveCorridor(this.corridorStart, edge, width, this.corridorWaypoints);
+            this.corridorStart = null;
+            this.corridorWaypoints = [];
+            this.showToast('통로가 생성되었습니다');
+        } else {
+            this.showToast('끝점 edge 위에서 Enter를 누르세요');
+        }
+    }
+    
+    // 인터렉티브 통로 생성 (Edge 위 버텍스 + 경유점 지원)
+    createInteractiveCorridor(start, end, width, waypoints = []) {
+        const halfW = width / 2;
+        
+        // 시작 edge의 두 점
+        const sEdgePts = this.getPointsOnEdge(start.p1, start.p2, start.point, halfW);
+        // 끝 edge의 두 점
+        const eEdgePts = this.getPointsOnEdge(end.p1, end.p2, end.point, halfW);
+        
+        // 모든 중심점 경로: 시작점 → 경유점들 → 끝점
+        const centerPath = [
+            start.point,
+            ...waypoints,
+            end.point
+        ];
+        
+        // 왼쪽 변과 오른쪽 변의 점들 계산
+        const leftPoints = [];
+        const rightPoints = [];
+        
+        for (let i = 0; i < centerPath.length; i++) {
+            const curr = centerPath[i];
+            
+            // 이전/다음 점으로 방향 계산
+            let dir;
+            if (i === 0) {
+                // 시작점: 다음 점 방향
+                const next = centerPath[i + 1];
+                dir = { x: next.x - curr.x, y: next.y - curr.y };
+            } else if (i === centerPath.length - 1) {
+                // 끝점: 이전 점에서 오는 방향
+                const prev = centerPath[i - 1];
+                dir = { x: curr.x - prev.x, y: curr.y - prev.y };
+            } else {
+                // 중간점: 이전→다음 방향의 평균
+                const prev = centerPath[i - 1];
+                const next = centerPath[i + 1];
+                dir = { 
+                    x: (next.x - prev.x), 
+                    y: (next.y - prev.y) 
+                };
+            }
+            
+            // 방향 정규화
+            const len = Math.sqrt(dir.x * dir.x + dir.y * dir.y);
+            if (len > 0) {
+                dir.x /= len;
+                dir.y /= len;
+            }
+            
+            // 수직 방향 (왼쪽/오른쪽)
+            const perpX = -dir.y * halfW;
+            const perpY = dir.x * halfW;
+            
+            if (i === 0) {
+                // 시작점: edge 위의 점 사용
+                leftPoints.push({ x: sEdgePts.p1.x, y: sEdgePts.p1.y, z: 0 });
+                rightPoints.push({ x: sEdgePts.p2.x, y: sEdgePts.p2.y, z: 0 });
+            } else if (i === centerPath.length - 1) {
+                // 끝점: edge 위의 점 사용 (순서 맞춤)
+                // 왼쪽 점과 더 가까운 것을 왼쪽에
+                const distL1 = Math.hypot(leftPoints[leftPoints.length-1].x - eEdgePts.p1.x, 
+                                          leftPoints[leftPoints.length-1].y - eEdgePts.p1.y);
+                const distL2 = Math.hypot(leftPoints[leftPoints.length-1].x - eEdgePts.p2.x, 
+                                          leftPoints[leftPoints.length-1].y - eEdgePts.p2.y);
+                
+                if (distL1 <= distL2) {
+                    leftPoints.push({ x: eEdgePts.p1.x, y: eEdgePts.p1.y, z: 0 });
+                    rightPoints.push({ x: eEdgePts.p2.x, y: eEdgePts.p2.y, z: 0 });
+                } else {
+                    leftPoints.push({ x: eEdgePts.p2.x, y: eEdgePts.p2.y, z: 0 });
+                    rightPoints.push({ x: eEdgePts.p1.x, y: eEdgePts.p1.y, z: 0 });
+                }
+            } else {
+                // 중간 경유점
+                leftPoints.push({ x: curr.x + perpX, y: curr.y + perpY, z: 0 });
+                rightPoints.push({ x: curr.x - perpX, y: curr.y - perpY, z: 0 });
+            }
+        }
+        
+        // 다각형 버텍스: 왼쪽 점들 → 오른쪽 점들 (역순)
+        const vertices = [
+            ...leftPoints,
+            ...rightPoints.reverse()
+        ];
+        
+        // Polyfloor 생성
+        const corridor = this.createPolyfloor(vertices);
+        this.objects.push(corridor);
+        
+        this.saveState();
+        this.updateObjectsList();
+        this.render();
+    }
+    
+    // Edge 위에서 중심점 기준 양쪽으로 halfW만큼의 두 점
+    getPointsOnEdge(p1, p2, center, halfW) {
+        // Edge 방향 벡터
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        const ux = dx / len;
+        const uy = dy / len;
+        
+        return {
+            p1: { x: center.x - ux * halfW, y: center.y - uy * halfW },
+            p2: { x: center.x + ux * halfW, y: center.y + uy * halfW }
+        };
+    }
+    
+    // Edge의 바깥쪽 법선 벡터 (바닥 중심에서 멀어지는 방향)
+    getEdgeOutwardNormal(p1, p2, floor) {
+        // Edge 방향
+        const dx = p2.x - p1.x;
+        const dy = p2.y - p1.y;
+        const len = Math.sqrt(dx * dx + dy * dy);
+        
+        // 법선 (오른쪽 90도 회전)
+        let nx = -dy / len;
+        let ny = dx / len;
+        
+        // 바닥 중심
+        const pts = floor.points || [
+            { x: floor.x, y: floor.y },
+            { x: floor.x + floor.width, y: floor.y },
+            { x: floor.x + floor.width, y: floor.y + floor.height },
+            { x: floor.x, y: floor.y + floor.height }
+        ];
+        const cx = pts.reduce((s, p) => s + p.x, 0) / pts.length;
+        const cy = pts.reduce((s, p) => s + p.y, 0) / pts.length;
+        
+        // Edge 중점
+        const mx = (p1.x + p2.x) / 2;
+        const my = (p1.y + p2.y) / 2;
+        
+        // 법선이 중심에서 멀어지는 방향인지 확인
+        const toCenterX = cx - mx;
+        const toCenterY = cy - my;
+        
+        if (nx * toCenterX + ny * toCenterY > 0) {
+            // 법선이 중심을 향함 → 반대로
+            nx = -nx;
+            ny = -ny;
+        }
+        
+        return { x: nx, y: ny };
+    }
+    
+    // polyfloor 생성 헬퍼
+    createPolyfloor(points, label = 'Corridor') {
+        return {
+            id: this.nextId++,
+            type: 'polyfloor',
+            category: 'floors',
+            floor: this.currentFloor,
+            color: 'hsla(200, 55%, 50%, 0.6)',
+            points: points,
+            floorHeight: 0,
+            closed: true,
+            label: label
+        };
+    }
+    
     // ========== 프로시저럴 레벨 생성 ==========
     // 로직은 procedural.js에 분리됨
     
@@ -7812,6 +8512,232 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
     
     proceduralExpand() {
         this.showToast('영역 확장 기능은 준비 중입니다');
+    }
+    
+    // ========== Python Procedural API 연동 ==========
+    
+    showProceduralDialog() {
+        document.getElementById('proceduralModal').style.display = 'flex';
+    }
+    
+    closeProceduralDialog() {
+        document.getElementById('proceduralModal').style.display = 'none';
+    }
+    
+    applyPreset(preset) {
+        const presets = {
+            compact: {
+                atkToSiteMin: 40, atkToSiteMax: 60,
+                defToSiteMin: 30, defToSiteMax: 50,
+                maxStraight: 15, corridorWidthMin: 4, corridorWidthMax: 5,
+                maxSightline: 35, coverSpacingMin: 6, coverSpacingMax: 10, exposedMax: 8
+            },
+            standard: {
+                atkToSiteMin: 60, atkToSiteMax: 90,
+                defToSiteMin: 40, defToSiteMax: 70,
+                maxStraight: 25, corridorWidthMin: 4, corridorWidthMax: 7,
+                maxSightline: 50, coverSpacingMin: 8, coverSpacingMax: 15, exposedMax: 12
+            },
+            open: {
+                atkToSiteMin: 80, atkToSiteMax: 120,
+                defToSiteMin: 50, defToSiteMax: 90,
+                maxStraight: 35, corridorWidthMin: 6, corridorWidthMax: 9,
+                maxSightline: 70, coverSpacingMin: 10, coverSpacingMax: 18, exposedMax: 16
+            }
+        };
+        
+        const p = presets[preset];
+        if (!p) return;
+        
+        document.getElementById('atkToSiteMin').value = p.atkToSiteMin;
+        document.getElementById('atkToSiteMax').value = p.atkToSiteMax;
+        document.getElementById('defToSiteMin').value = p.defToSiteMin;
+        document.getElementById('defToSiteMax').value = p.defToSiteMax;
+        document.getElementById('maxStraight').value = p.maxStraight;
+        document.getElementById('maxStraightVal').textContent = p.maxStraight + 'm';
+        document.getElementById('corridorWidthMin').value = p.corridorWidthMin;
+        document.getElementById('corridorWidthMax').value = p.corridorWidthMax;
+        document.getElementById('maxSightline').value = p.maxSightline;
+        document.getElementById('maxSightlineVal').textContent = p.maxSightline + 'm';
+        document.getElementById('coverSpacingMin').value = p.coverSpacingMin;
+        document.getElementById('coverSpacingMax').value = p.coverSpacingMax;
+        document.getElementById('exposedMax').value = p.exposedMax;
+        document.getElementById('exposedMaxVal').textContent = p.exposedMax + 'm';
+        
+        this.showToast(`${preset} 프리셋 적용됨`);
+    }
+    
+    async generateWithParams() {
+        const PYTHON_API = 'http://localhost:3003';
+        
+        // 파라미터 수집
+        const rules = {
+            timing: {
+                atk_to_site: [
+                    parseInt(document.getElementById('atkToSiteMin').value),
+                    parseInt(document.getElementById('atkToSiteMax').value)
+                ],
+                def_to_site: [
+                    parseInt(document.getElementById('defToSiteMin').value),
+                    parseInt(document.getElementById('defToSiteMax').value)
+                ]
+            },
+            corridors: {
+                max_straight: parseInt(document.getElementById('maxStraight').value),
+                width: [
+                    parseInt(document.getElementById('corridorWidthMin').value),
+                    parseInt(document.getElementById('corridorWidthMax').value)
+                ]
+            },
+            sightlines: {
+                max_length: parseInt(document.getElementById('maxSightline').value)
+            },
+            cover: {
+                spacing: [
+                    parseInt(document.getElementById('coverSpacingMin').value),
+                    parseInt(document.getElementById('coverSpacingMax').value)
+                ],
+                exposed_max: parseInt(document.getElementById('exposedMax').value)
+            }
+        };
+        
+        // 캔버스 비우기 옵션
+        const clearCanvas = document.getElementById('clearCanvas').checked;
+        if (clearCanvas) {
+            this.objects = [];
+            this.nextId = 1;
+        }
+        
+        // 모달 닫기
+        this.closeProceduralDialog();
+        
+        // 기본 영역
+        const bounds = { x: -2400, y: -2400, width: 4800, height: 4800 };
+        
+        this.showToast('맵 생성 중...');
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bounds: bounds,
+                    options: {
+                        seed: Math.floor(Math.random() * 1000000),
+                        rules: rules
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.objects && data.objects.length > 0) {
+                data.objects.forEach(obj => {
+                    obj.id = this.nextId++;
+                    this.objects.push(obj);
+                });
+                
+                this.render();
+                this.showToast(`${data.objects.length}개 오브젝트 생성됨 (Seed: ${data.seed})`);
+                this.updateAIStatus(`생성 완료`, 'success');
+            } else {
+                this.showToast('생성된 오브젝트가 없습니다');
+            }
+        } catch (err) {
+            console.error('Python API 오류:', err);
+            this.showToast('Python 서버 연결 실패');
+            this.updateAIStatus('Python 서버 없음', 'error');
+        }
+    }
+    
+    async proceduralGenerate(style = 'standard') {
+        const PYTHON_API = 'http://localhost:3003';
+        
+        // 선택된 영역이 있으면 그 영역 사용, 없으면 전체 영역
+        let bounds;
+        const selectedObj = this.objects.find(o => this.isSelected(o.id));
+        
+        if (selectedObj && selectedObj.width && selectedObj.height) {
+            bounds = {
+                x: selectedObj.x,
+                y: selectedObj.y,
+                width: selectedObj.width,
+                height: selectedObj.height
+            };
+            this.showToast(`선택 영역에서 생성 중... (${style})`);
+        } else {
+            // 전체 영역 계산
+            const allFloors = this.objects.filter(o => 
+                o.type === 'polyfloor' || o.type === 'floor-area' ||
+                o.type === 'spawn-def' || o.type === 'spawn-off' || o.type === 'objective'
+            );
+            
+            if (allFloors.length > 0) {
+                const xs = allFloors.flatMap(o => o.points ? o.points.map(p => p.x) : [o.x, o.x + o.width]);
+                const ys = allFloors.flatMap(o => o.points ? o.points.map(p => p.y) : [o.y, o.y + o.height]);
+                bounds = {
+                    x: Math.min(...xs) - 200,
+                    y: Math.min(...ys) - 200,
+                    width: Math.max(...xs) - Math.min(...xs) + 400,
+                    height: Math.max(...ys) - Math.min(...ys) + 400
+                };
+            } else {
+                // 기본 영역
+                bounds = { x: -1500, y: -1500, width: 3000, height: 3000 };
+            }
+            this.showToast(`새 맵 생성 중... (${style})`);
+        }
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bounds: bounds,
+                    options: {
+                        style: style,
+                        complexity: 3,
+                        seed: Math.floor(Math.random() * 1000000)
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.objects && data.objects.length > 0) {
+                // ID 할당 및 추가
+                data.objects.forEach(obj => {
+                    obj.id = this.nextId++;
+                    this.objects.push(obj);
+                });
+                
+                this.render();
+                this.showToast(`✅ ${data.objects.length}개 오브젝트 생성됨 (Seed: ${data.seed})`);
+                this.updateAIStatus(`생성 완료: ${style}`, 'success');
+            } else {
+                this.showToast('생성된 오브젝트가 없습니다');
+            }
+        } catch (err) {
+            console.error('Python API 오류:', err);
+            this.showToast('⚠️ Python 서버 연결 실패. procedural_api_server.py 실행 필요');
+            this.updateAIStatus('Python 서버 없음', 'error');
+        }
+    }
+    
+    // 브러시 영역에서 생성 (선택 영역 필수)
+    async proceduralFromSelection(style = 'standard') {
+        const selectedObj = this.objects.find(o => this.isSelected(o.id));
+        
+        if (!selectedObj) {
+            this.showToast('먼저 영역을 선택하세요 (floor-area 또는 polyfloor)');
+            return;
+        }
+        
+        await this.proceduralGenerate(style);
     }
     
     async aiAutoGenerate(mode) {

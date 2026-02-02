@@ -43,6 +43,7 @@
                     <button class="menu-btn tool-btn" data-tool="pan" title="이동 도구 (Space)&#10;캔버스를 드래그하여 이동"><i class="fa-solid fa-hand"></i></button>
                     <button class="menu-btn tool-btn" data-tool="polygon" title="다각형 바닥 (P)&#10;클릭: 점 추가&#10;Enter/더블클릭: 완성" style="color:#4ecdc4;"><i class="fa-solid fa-draw-polygon"></i></button>
                     <button class="menu-btn tool-btn" data-tool="spline" id="splineToolBtn" title="스플라인 바닥 (S)&#10;클릭: 경로점 추가&#10;Enter/더블클릭: 바닥 생성" style="color:#f39c12;"><i class="fa-solid fa-bezier-curve"></i></button>
+                    <button class="menu-btn tool-btn" data-tool="corridor" id="corridorToolBtn" title="통로 연결 (C)&#10;Edge 클릭: 연결점 선택&#10;두 점 선택하면 자동 연결" style="color:#3498db;"><i class="fa-solid fa-road"></i></button>
                     <!-- 스플라인 옵션 팝업 -->
                     <div class="spline-popup" id="splineOptions" style="display:none;">
                         <div class="spline-popup-title">통로 너비</div>
@@ -129,6 +130,17 @@
                     </div>
                 </div>
 
+                <div class="tool-section" style="border-top: 1px solid #4a9; padding-top: 8px;">
+                    <div class="tool-section-title" style="color:#4a9;">🐍 PROCEDURAL GEN</div>
+                    <button class="tool-btn-wide" onclick="app.showProceduralDialog()" title="규칙 기반 2사이트 맵 생성" style="background:#2d5a3d;">
+                        <i class="fa-solid fa-wand-magic-sparkles" style="color:#4ecdc4"></i>
+                        <span>맵 생성</span>
+                    </button>
+                    <div id="pyStatus" style="font-size:10px;color:#4a9;margin-top:4px;padding:0 4px;">
+                        Python 서버: localhost:3003
+                    </div>
+                </div>
+
                 <div class="tool-section objects-section">
                     <div class="tool-section-title">
                         OBJECTS <span id="objectCount" class="badge">0</span>
@@ -148,15 +160,27 @@
                 <!-- 프로시저럴 자동 생성 버튼 -->
                 <div class="ai-auto-section">
                     <button class="ai-auto-btn" onclick="app.proceduralConnect()">
-                        <i class="fa-solid fa-link"></i> 통로 자동 연결
-                    </button>
-                    <button class="ai-auto-btn" onclick="app.proceduralExpand()">
-                        <i class="fa-solid fa-expand"></i> 영역 확장
+                        <i class="fa-solid fa-link"></i> 통로 연결
                     </button>
                     <button class="ai-auto-btn ai-area-btn" onclick="app.startAIAreaSelection()">
                         <i class="fa-solid fa-vector-square"></i> 영역 지정
                     </button>
                 </div>
+                
+                <!-- Python Procedural API -->
+                <div class="ai-auto-section" style="margin-top: 6px; border-top: 1px solid #444; padding-top: 8px;">
+                    <div style="font-size: 11px; color: #4a9; margin-bottom: 6px;">🐍 Tactical Map Generator</div>
+                    <button class="ai-auto-btn" onclick="app.proceduralGenerate('standard')" title="2사이트 표준 맵">
+                        <i class="fa-solid fa-wand-magic-sparkles"></i> Standard
+                    </button>
+                    <button class="ai-auto-btn" onclick="app.proceduralGenerate('linear')" title="선형 구조 맵">
+                        <i class="fa-solid fa-arrows-left-right"></i> Linear
+                    </button>
+                    <button class="ai-auto-btn" onclick="app.proceduralGenerate('multi_site')" title="3사이트 맵">
+                        <i class="fa-solid fa-cubes"></i> 3-Site
+                    </button>
+                </div>
+                
                 <div class="procedural-options">
                     <label>통로 폭: <input type="number" id="corridorWidth" value="5" min="3" max="8" style="width:50px">m</label>
                 </div>
@@ -255,5 +279,121 @@
     <script src="procedural.js"></script>
     <script src="app.js"></script>
     <script src="viewer3d.js"></script>
+
+    <!-- Procedural 파라미터 모달 -->
+    <div id="proceduralModal" style="display:none; position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.7); z-index:9999; justify-content:center; align-items:center;">
+        <div style="background:#1a1a2e; border-radius:12px; padding:24px; width:480px; max-height:80vh; overflow-y:auto; border:1px solid #4a9;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h3 style="color:#4ecdc4; margin:0;">맵 생성 설정</h3>
+                <button onclick="app.closeProceduralDialog()" style="background:none; border:none; color:#888; font-size:20px; cursor:pointer;">&times;</button>
+            </div>
+            
+            <!-- 캔버스 비우기 옵션 -->
+            <div style="background:#2d2d44; padding:12px; border-radius:8px; margin-bottom:16px;">
+                <label style="display:flex; align-items:center; gap:8px; color:#fff; cursor:pointer;">
+                    <input type="checkbox" id="clearCanvas" checked style="width:18px; height:18px;">
+                    <span>캔버스 비우고 생성</span>
+                </label>
+            </div>
+
+            <!-- 타이밍 -->
+            <div class="param-group" style="margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">타이밍 밸런스</div>
+                <div style="display:grid; gap:8px;">
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">공격→사이트 (타일)</label>
+                        <div style="display:flex; gap:8px; margin-top:4px;">
+                            <input type="number" id="atkToSiteMin" value="60" min="20" max="120" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                            <span style="color:#666;">~</span>
+                            <input type="number" id="atkToSiteMax" value="90" min="20" max="120" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                        </div>
+                    </div>
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">수비→사이트 (타일)</label>
+                        <div style="display:flex; gap:8px; margin-top:4px;">
+                            <input type="number" id="defToSiteMin" value="40" min="20" max="100" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                            <span style="color:#666;">~</span>
+                            <input type="number" id="defToSiteMax" value="70" min="20" max="100" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 통로 -->
+            <div class="param-group" style="margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">통로</div>
+                <div style="display:grid; gap:8px;">
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">최대 직선 길이 (m)</label>
+                        <input type="range" id="maxStraight" min="10" max="40" value="25" style="width:100%; margin-top:4px;">
+                        <span id="maxStraightVal" style="color:#4ecdc4;">25m</span>
+                    </div>
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">통로 너비 (m)</label>
+                        <div style="display:flex; gap:8px; margin-top:4px;">
+                            <input type="number" id="corridorWidthMin" value="4" min="3" max="10" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                            <span style="color:#666;">~</span>
+                            <input type="number" id="corridorWidthMax" value="7" min="3" max="10" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 시야선 -->
+            <div class="param-group" style="margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">시야선</div>
+                <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                    <label style="color:#aaa; font-size:12px;">최대 시야선 (m)</label>
+                    <input type="range" id="maxSightline" min="20" max="80" value="50" style="width:100%; margin-top:4px;">
+                    <span id="maxSightlineVal" style="color:#4ecdc4;">50m</span>
+                </div>
+            </div>
+
+            <!-- 커버 -->
+            <div class="param-group" style="margin-bottom:16px;">
+                <div style="color:#4ecdc4; font-weight:bold; margin-bottom:8px;">엄폐물</div>
+                <div style="display:grid; gap:8px;">
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">커버 간격 (m)</label>
+                        <div style="display:flex; gap:8px; margin-top:4px;">
+                            <input type="number" id="coverSpacingMin" value="8" min="4" max="20" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                            <span style="color:#666;">~</span>
+                            <input type="number" id="coverSpacingMax" value="15" min="4" max="20" style="width:60px; background:#1a1a2e; border:1px solid #444; color:#fff; padding:4px; border-radius:4px;">
+                        </div>
+                    </div>
+                    <div style="background:#2d2d44; padding:10px; border-radius:6px;">
+                        <label style="color:#aaa; font-size:12px;">최대 노출 거리 (m)</label>
+                        <input type="range" id="exposedMax" min="6" max="20" value="12" style="width:100%; margin-top:4px;">
+                        <span id="exposedMaxVal" style="color:#4ecdc4;">12m</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 프리셋 버튼 -->
+            <div style="display:flex; gap:8px; margin-bottom:16px;">
+                <button onclick="app.applyPreset('compact')" style="flex:1; padding:8px; background:#3d5a3d; border:none; color:#fff; border-radius:6px; cursor:pointer;">콤팩트</button>
+                <button onclick="app.applyPreset('standard')" style="flex:1; padding:8px; background:#3d5a5a; border:none; color:#fff; border-radius:6px; cursor:pointer;">표준</button>
+                <button onclick="app.applyPreset('open')" style="flex:1; padding:8px; background:#5a3d5a; border:none; color:#fff; border-radius:6px; cursor:pointer;">오픈</button>
+            </div>
+
+            <!-- 생성 버튼 -->
+            <button onclick="app.generateWithParams()" style="width:100%; padding:14px; background:linear-gradient(135deg, #4ecdc4, #44a08d); border:none; color:#fff; font-size:16px; font-weight:bold; border-radius:8px; cursor:pointer;">
+                맵 생성
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // 슬라이더 값 표시 업데이트
+        document.getElementById('maxStraight').addEventListener('input', e => {
+            document.getElementById('maxStraightVal').textContent = e.target.value + 'm';
+        });
+        document.getElementById('maxSightline').addEventListener('input', e => {
+            document.getElementById('maxSightlineVal').textContent = e.target.value + 'm';
+        });
+        document.getElementById('exposedMax').addEventListener('input', e => {
+            document.getElementById('exposedMaxVal').textContent = e.target.value + 'm';
+        });
+    </script>
 </body>
 </html>

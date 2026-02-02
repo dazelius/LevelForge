@@ -928,6 +928,47 @@ body {
     color: var(--accent);
 }
 
+/* Floor Color Buttons */
+.floor-color-btns {
+    display: flex;
+    gap: 6px;
+    align-items: center;
+    flex-wrap: wrap;
+}
+
+.floor-color-btns .color-btn {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    transition: all 0.15s ease;
+}
+
+.floor-color-btns .color-btn:hover {
+    transform: scale(1.1);
+    border-color: #fff;
+}
+
+.floor-color-btns input[type="color"] {
+    width: 28px;
+    height: 28px;
+    border: 2px solid var(--border);
+    border-radius: 4px;
+    cursor: pointer;
+    padding: 0;
+    background: transparent;
+}
+
+.floor-color-btns input[type="color"]::-webkit-color-swatch-wrapper {
+    padding: 2px;
+}
+
+.floor-color-btns input[type="color"]::-webkit-color-swatch {
+    border: none;
+    border-radius: 2px;
+}
+
 /* Scrollbar */
 ::-webkit-scrollbar {
     width: 6px;
