@@ -537,7 +537,7 @@ class LevelForge {
 
         // 레이아웃 편집 모드
         if (this.layoutEditMode && e.button === 0) {
-            if (this.handleLayoutMouseDown(world.x, world.y)) {
+            if (this.handleLayoutMouseDown(world.x, world.y, e.shiftKey)) {
                 return;
             }
         }
@@ -814,7 +814,7 @@ class LevelForge {
         const snapped = this.snap(world.x, world.y);
 
         // 레이아웃 편집 모드: 드래그 종료
-        if (this.layoutEditMode && this.handleLayoutMouseUp()) {
+        if (this.layoutEditMode && this.handleLayoutMouseUp(world.x, world.y)) {
             return;
         }
 
@@ -10716,6 +10716,12 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         this.layoutSelectedNode = null;
         this.layoutDragging = false;
         
+        // 연결 편집 상태
+        this.layoutRemovedConnections = new Set();  // 끊은 연결 "from-to" 형태
+        this.layoutCustomConnections = [];  // 추가한 연결 [{from, to, type}]
+        this.layoutConnectingFrom = null;  // Shift+드래그 시작 노드
+        this.layoutConnectingPos = null;   // 드래그 중인 위치
+        
         this.extractLayoutNodes();
         this.updateLayoutNodeList();
         this.render();  // 메인 캔버스에 노드 그리기
@@ -10883,6 +10889,9 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
     renderLayoutNodes(ctx) {
         const METER = 32;
         
+        // 먼저 연결선 그리기
+        this.renderLayoutConnections(ctx);
+        
         this.layoutNodes.forEach(node => {
             const w = node.width * METER;
             const h = node.height * METER;
@@ -10915,6 +10924,238 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         });
     }
     
+    // 레이아웃 노드 간 연결선 그리기
+    renderLayoutConnections(ctx) {
+        // 연결 규칙 정의 (백엔드 procedural_v2.py 기반)
+        // [from, to, type] - type: 'essential' (필수), 'secondary' (보조)
+        const connections2Site = [
+            // 필수 연결 (2사이트)
+            ['atk', 'lobbyA', 'essential'],
+            ['atk', 'lobbyB', 'essential'],
+            ['atk', 'midEntrance', 'essential'],
+            ['lobbyA', 'mainA', 'essential'],
+            ['mainA', 'chokeA', 'essential'],
+            ['chokeA', 'siteA', 'essential'],
+            ['lobbyB', 'mainB', 'essential'],
+            ['mainB', 'chokeB', 'essential'],
+            ['chokeB', 'siteB', 'essential'],
+            ['midEntrance', 'mid', 'essential'],
+            ['mid', 'midTop', 'essential'],
+            ['midTop', 'def', 'essential'],
+            // 보조 연결
+            ['mid', 'chokeA', 'secondary'],
+            ['mid', 'chokeB', 'secondary'],
+            ['midTop', 'siteA', 'secondary'],
+            ['midTop', 'siteB', 'secondary'],
+            ['def', 'siteA', 'secondary'],
+            ['def', 'siteB', 'secondary'],
+        ];
+        
+        const connections1Site = [
+            ['atk', 'midEntrance', 'essential'],
+            ['midEntrance', 'mid', 'essential'],
+            ['mid', 'midTop', 'essential'],
+            ['midTop', 'chokeA', 'essential'],
+            ['chokeA', 'siteA', 'essential'],
+            ['atk', 'lobbyA', 'essential'],
+            ['lobbyA', 'mainA', 'essential'],
+            ['mainA', 'chokeA', 'essential'],
+            ['def', 'siteA', 'essential'],
+            ['def', 'midTop', 'essential'],
+            ['mid', 'mainA', 'secondary'],
+            ['lobbyA', 'midEntrance', 'secondary'],
+        ];
+        
+        const connections3Site = [
+            ['atk', 'lobbyA', 'essential'],
+            ['atk', 'lobbyB', 'essential'],
+            ['atk', 'midEntrance', 'essential'],
+            ['lobbyA', 'mainA', 'essential'],
+            ['mainA', 'chokeA', 'essential'],
+            ['chokeA', 'siteA', 'essential'],
+            ['lobbyB', 'mainB', 'essential'],
+            ['mainB', 'chokeB', 'essential'],
+            ['chokeB', 'siteB', 'essential'],
+            ['midEntrance', 'mid', 'essential'],
+            ['mid', 'mainC', 'essential'],
+            ['mainC', 'chokeC', 'essential'],
+            ['chokeC', 'siteC', 'essential'],
+            ['mid', 'midTop', 'essential'],
+            ['midTop', 'def', 'essential'],
+            ['mid', 'chokeA', 'secondary'],
+            ['mid', 'chokeB', 'secondary'],
+            ['midTop', 'siteA', 'secondary'],
+            ['midTop', 'siteB', 'secondary'],
+            ['midTop', 'siteC', 'secondary'],
+            ['def', 'siteA', 'secondary'],
+            ['def', 'siteB', 'secondary'],
+            ['def', 'siteC', 'secondary'],
+        ];
+        
+        // SIDE 연결 (플랭크 경로)
+        const sideConnections = [
+            ['sideA', 'mainA', 'secondary'],
+            ['sideA', 'siteA', 'secondary'],
+            ['sideB', 'mainB', 'secondary'],
+            ['sideB', 'siteB', 'secondary'],
+        ];
+        
+        // 현재 사이트 개수 파악
+        const siteTypes = ['SITE_A', 'SITE_B', 'SITE_C', 'SITE', 'A_SITE', 'B_SITE', 'C_SITE'];
+        const siteCount = this.layoutNodes.filter(n => siteTypes.includes(n.originalType || n.type)).length || 1;
+        
+        let connections;
+        if (siteCount >= 3) {
+            connections = connections3Site;
+        } else if (siteCount >= 2) {
+            connections = connections2Site;
+        } else {
+            connections = connections1Site;
+        }
+        
+        // SIDE 연결 추가
+        connections = connections.concat(sideConnections);
+        
+        // layoutKey로 노드 찾기
+        const nodeMap = {};
+        this.layoutNodes.forEach(n => {
+            if (n.layoutKey) nodeMap[n.layoutKey] = n;
+        });
+        
+        // 커스텀 연결 추가
+        const allConnections = [...connections, ...this.layoutCustomConnections.map(c => [c.from, c.to, c.type])];
+        
+        // 현재 활성화된 연결 목록 저장 (클릭 감지용)
+        this.layoutActiveConnections = [];
+        
+        // 연결선 그리기
+        allConnections.forEach(([from, to, type]) => {
+            // 제거된 연결은 건너뜀
+            const connKey = `${from}-${to}`;
+            const connKeyReverse = `${to}-${from}`;
+            if (this.layoutRemovedConnections.has(connKey) || this.layoutRemovedConnections.has(connKeyReverse)) {
+                return;
+            }
+            
+            const nodeA = nodeMap[from];
+            const nodeB = nodeMap[to];
+            
+            if (nodeA && nodeB) {
+                // 연결 정보 저장
+                this.layoutActiveConnections.push({ from, to, type, nodeA, nodeB });
+                
+                ctx.beginPath();
+                ctx.moveTo(nodeA.x, nodeA.y);
+                ctx.lineTo(nodeB.x, nodeB.y);
+                
+                if (type === 'essential') {
+                    ctx.strokeStyle = 'rgba(76, 175, 80, 0.8)';  // 초록색 (필수)
+                    ctx.lineWidth = 4 / this.camera.zoom;
+                    ctx.setLineDash([]);
+                } else {
+                    ctx.strokeStyle = 'rgba(255, 193, 7, 0.6)';  // 노란색 (보조)
+                    ctx.lineWidth = 2 / this.camera.zoom;
+                    ctx.setLineDash([8 / this.camera.zoom, 4 / this.camera.zoom]);
+                }
+                ctx.stroke();
+                ctx.setLineDash([]);
+                
+                // 연결선 중간에 X 버튼 그리기
+                const midX = (nodeA.x + nodeB.x) / 2;
+                const midY = (nodeA.y + nodeB.y) / 2;
+                const btnSize = 16 / this.camera.zoom;
+                
+                ctx.fillStyle = 'rgba(231, 76, 60, 0.9)';
+                ctx.beginPath();
+                ctx.arc(midX, midY, btnSize / 2, 0, Math.PI * 2);
+                ctx.fill();
+                
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2 / this.camera.zoom;
+                const offset = btnSize / 4;
+                ctx.beginPath();
+                ctx.moveTo(midX - offset, midY - offset);
+                ctx.lineTo(midX + offset, midY + offset);
+                ctx.moveTo(midX + offset, midY - offset);
+                ctx.lineTo(midX - offset, midY + offset);
+                ctx.stroke();
+            }
+        });
+        
+        // 드래그 중인 연결선 그리기
+        if (this.layoutConnectingFrom && this.layoutConnectingPos) {
+            ctx.beginPath();
+            ctx.moveTo(this.layoutConnectingFrom.x, this.layoutConnectingFrom.y);
+            ctx.lineTo(this.layoutConnectingPos.x, this.layoutConnectingPos.y);
+            ctx.strokeStyle = 'rgba(52, 152, 219, 0.8)';  // 파란색
+            ctx.lineWidth = 3 / this.camera.zoom;
+            ctx.setLineDash([6 / this.camera.zoom, 3 / this.camera.zoom]);
+            ctx.stroke();
+            ctx.setLineDash([]);
+        }
+    }
+    
+    // 연결선 클릭 감지
+    getConnectionAt(worldX, worldY) {
+        if (!this.layoutActiveConnections) return null;
+        
+        const threshold = 20 / this.camera.zoom;
+        
+        for (const conn of this.layoutActiveConnections) {
+            const midX = (conn.nodeA.x + conn.nodeB.x) / 2;
+            const midY = (conn.nodeA.y + conn.nodeB.y) / 2;
+            const dist = Math.sqrt((worldX - midX) ** 2 + (worldY - midY) ** 2);
+            
+            if (dist < threshold) {
+                return conn;
+            }
+        }
+        return null;
+    }
+    
+    // 연결 끊기
+    removeLayoutConnection(conn) {
+        const connKey = `${conn.from}-${conn.to}`;
+        this.layoutRemovedConnections.add(connKey);
+        
+        // 커스텀 연결에서도 제거
+        this.layoutCustomConnections = this.layoutCustomConnections.filter(
+            c => !(c.from === conn.from && c.to === conn.to) && !(c.from === conn.to && c.to === conn.from)
+        );
+        
+        this.render();
+    }
+    
+    // 연결 추가
+    addLayoutConnection(fromNode, toNode) {
+        if (!fromNode || !toNode || fromNode === toNode) return;
+        if (!fromNode.layoutKey || !toNode.layoutKey) return;
+        
+        // 이미 존재하는 연결인지 확인
+        const connKey = `${fromNode.layoutKey}-${toNode.layoutKey}`;
+        const connKeyReverse = `${toNode.layoutKey}-${fromNode.layoutKey}`;
+        
+        const exists = this.layoutActiveConnections?.some(c => 
+            (c.from === fromNode.layoutKey && c.to === toNode.layoutKey) ||
+            (c.from === toNode.layoutKey && c.to === fromNode.layoutKey)
+        );
+        
+        if (exists) return;
+        
+        // 제거된 연결이었다면 복구
+        this.layoutRemovedConnections.delete(connKey);
+        this.layoutRemovedConnections.delete(connKeyReverse);
+        
+        // 커스텀 연결로 추가
+        this.layoutCustomConnections.push({
+            from: fromNode.layoutKey,
+            to: toNode.layoutKey,
+            type: 'custom'
+        });
+        
+        this.render();
+    }
+    
     getLayoutNodeAt(worldX, worldY) {
         const METER = 32;
         for (let i = this.layoutNodes.length - 1; i >= 0; i--) {
@@ -10938,11 +11179,28 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
     }
     
     // 레이아웃 편집 모드에서 마우스 이벤트 처리
-    handleLayoutMouseDown(worldX, worldY) {
+    handleLayoutMouseDown(worldX, worldY, shiftKey) {
+        // 1. 연결선 X 버튼 클릭 확인
+        const clickedConn = this.getConnectionAt(worldX, worldY);
+        if (clickedConn) {
+            this.removeLayoutConnection(clickedConn);
+            return true;
+        }
+        
         const clickedNode = this.getLayoutNodeAt(worldX, worldY);
         
         if (clickedNode) {
             this.layoutSelectedNode = clickedNode;
+            
+            // 2. Shift+클릭 → 연결 생성 모드
+            if (shiftKey) {
+                this.layoutConnectingFrom = clickedNode;
+                this.layoutConnectingPos = { x: worldX, y: worldY };
+                this.render();
+                return true;
+            }
+            
+            // 3. 일반 클릭 → 노드 드래그
             this.layoutDragging = true;
             this.layoutDragOffset = {
                 x: worldX - clickedNode.x,
@@ -10950,7 +11208,7 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
             };
             this.updateLayoutPanel();
             this.render();
-            return true;  // 이벤트 처리됨
+            return true;
         } else {
             this.layoutSelectedNode = null;
             this.updateLayoutPanel();
@@ -10960,6 +11218,14 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
     }
     
     handleLayoutMouseMove(worldX, worldY) {
+        // 연결 생성 드래그 중
+        if (this.layoutConnectingFrom) {
+            this.layoutConnectingPos = { x: worldX, y: worldY };
+            this.render();
+            return true;
+        }
+        
+        // 노드 드래그 중
         if (this.layoutDragging && this.layoutSelectedNode) {
             this.layoutSelectedNode.x = worldX - this.layoutDragOffset.x;
             this.layoutSelectedNode.y = worldY - this.layoutDragOffset.y;
@@ -10969,7 +11235,19 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         return false;
     }
     
-    handleLayoutMouseUp() {
+    handleLayoutMouseUp(worldX, worldY) {
+        // 연결 생성 완료
+        if (this.layoutConnectingFrom) {
+            const targetNode = this.getLayoutNodeAt(worldX, worldY);
+            if (targetNode && targetNode !== this.layoutConnectingFrom) {
+                this.addLayoutConnection(this.layoutConnectingFrom, targetNode);
+            }
+            this.layoutConnectingFrom = null;
+            this.layoutConnectingPos = null;
+            this.render();
+            return true;
+        }
+        
         if (this.layoutDragging) {
             this.layoutDragging = false;
             return true;
