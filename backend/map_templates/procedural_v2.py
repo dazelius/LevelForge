@@ -257,23 +257,55 @@ class ProceduralV2Template(MapTemplate):
             y = int(norm_y * (s - 2 * margin) + margin)
             return np.clip(x, margin, s - margin), np.clip(y, margin, s - margin)
         
-        # 각 노드의 맵 좌표
-        atk_pos = to_map_coord(user_layout['atk']['x'], user_layout['atk']['y'])
-        def_pos = to_map_coord(user_layout['def']['x'], user_layout['def']['y'])
-        mid_pos = to_map_coord(user_layout['mid']['x'], user_layout['mid']['y'])
+        # 안전하게 좌표 가져오기 (없으면 기본값 사용)
+        def safe_coord(key, default_x, default_y):
+            if key in user_layout:
+                return to_map_coord(user_layout[key]['x'], user_layout[key]['y'])
+            return to_map_coord(default_x, default_y)
         
-        site_a_pos = to_map_coord(user_layout['siteA']['x'], user_layout['siteA']['y'])
-        site_b_pos = to_map_coord(user_layout['siteB']['x'], user_layout['siteB']['y']) if site_count >= 2 else None
-        site_c_pos = to_map_coord(user_layout['siteC']['x'], user_layout['siteC']['y']) if site_count >= 3 else None
+        # 각 노드의 맵 좌표 (필수 노드는 기본 위치 제공)
+        atk_pos = safe_coord('atk', 0.5, 0.1)      # 상단 중앙
+        def_pos = safe_coord('def', 0.5, 0.9)      # 하단 중앙
+        mid_pos = safe_coord('mid', 0.5, 0.5)      # 중앙
         
-        # 랑데뷰 포인트 (SIDE, LOBBY)
+        # 사이트 위치 (site_count에 따라 기본 위치 결정)
+        if 'siteA' in user_layout:
+            site_a_pos = to_map_coord(user_layout['siteA']['x'], user_layout['siteA']['y'])
+        elif site_count >= 1:
+            site_a_pos = to_map_coord(0.25, 0.7)   # 기본: 좌하단
+        else:
+            site_a_pos = None
+            
+        if 'siteB' in user_layout and site_count >= 2:
+            site_b_pos = to_map_coord(user_layout['siteB']['x'], user_layout['siteB']['y'])
+        elif site_count >= 2:
+            site_b_pos = to_map_coord(0.75, 0.7)   # 기본: 우하단
+        else:
+            site_b_pos = None
+            
+        site_c_pos = to_map_coord(user_layout['siteC']['x'], user_layout['siteC']['y']) if 'siteC' in user_layout and site_count >= 3 else None
+        
+        # 랑데뷰 포인트 (SIDE, LOBBY) - 선택적
         side_a_pos = to_map_coord(user_layout['sideA']['x'], user_layout['sideA']['y']) if 'sideA' in user_layout else None
         side_b_pos = to_map_coord(user_layout['sideB']['x'], user_layout['sideB']['y']) if 'sideB' in user_layout and site_count >= 2 else None
         lobby_a_pos = to_map_coord(user_layout['lobbyA']['x'], user_layout['lobbyA']['y']) if 'lobbyA' in user_layout else None
         lobby_b_pos = to_map_coord(user_layout['lobbyB']['x'], user_layout['lobbyB']['y']) if 'lobbyB' in user_layout and site_count >= 2 else None
         
-        # A 사이트가 왼쪽인지 오른쪽인지 판단
-        a_side = 'left' if site_a_pos[0] < s // 2 else 'right'
+        # 추가 노드들 (MAIN, CHOKE, HEAVEN, MID 관련)
+        main_a_pos = to_map_coord(user_layout['mainA']['x'], user_layout['mainA']['y']) if 'mainA' in user_layout else None
+        main_b_pos = to_map_coord(user_layout['mainB']['x'], user_layout['mainB']['y']) if 'mainB' in user_layout and site_count >= 2 else None
+        choke_a_pos = to_map_coord(user_layout['chokeA']['x'], user_layout['chokeA']['y']) if 'chokeA' in user_layout else None
+        choke_b_pos = to_map_coord(user_layout['chokeB']['x'], user_layout['chokeB']['y']) if 'chokeB' in user_layout and site_count >= 2 else None
+        heaven_a_pos = to_map_coord(user_layout['heavenA']['x'], user_layout['heavenA']['y']) if 'heavenA' in user_layout else None
+        heaven_b_pos = to_map_coord(user_layout['heavenB']['x'], user_layout['heavenB']['y']) if 'heavenB' in user_layout and site_count >= 2 else None
+        mid_top_pos = to_map_coord(user_layout['midTop']['x'], user_layout['midTop']['y']) if 'midTop' in user_layout else None
+        mid_entrance_pos = to_map_coord(user_layout['midEntrance']['x'], user_layout['midEntrance']['y']) if 'midEntrance' in user_layout else None
+        
+        # A 사이트가 왼쪽인지 오른쪽인지 판단 (siteA가 있을 때만)
+        if site_a_pos:
+            a_side = 'left' if site_a_pos[0] < s // 2 else 'right'
+        else:
+            a_side = 'left'  # 기본값
         
         return {
             'a_side': a_side,
@@ -293,6 +325,15 @@ class ProceduralV2Template(MapTemplate):
                 'sideB': side_b_pos,
                 'lobbyA': lobby_a_pos,
                 'lobbyB': lobby_b_pos,
+                # 추가 노드
+                'mainA': main_a_pos,
+                'mainB': main_b_pos,
+                'chokeA': choke_a_pos,
+                'chokeB': choke_b_pos,
+                'heavenA': heaven_a_pos,
+                'heavenB': heaven_b_pos,
+                'midTop': mid_top_pos,
+                'midEntrance': mid_entrance_pos,
             }
         }
     
@@ -320,18 +361,19 @@ class ProceduralV2Template(MapTemplate):
             cls.create_room(m, rooms, "DEF_SPAWN", def_x, def_y, def_w, def_h, Tile.SPAWN_DEF)
             
             # 사이트들
-            a_w, a_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
-            a_x = user_pos['siteA'][0] - a_w // 2
-            a_y = user_pos['siteA'][1] - a_h // 2
-            cls.create_room(m, rooms, "A_SITE", a_x, a_y, a_w, a_h, Tile.SITE_A)
+            if user_pos['siteA']:
+                a_w, a_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
+                a_x = user_pos['siteA'][0] - a_w // 2
+                a_y = user_pos['siteA'][1] - a_h // 2
+                cls.create_room(m, rooms, "A_SITE", a_x, a_y, a_w, a_h, Tile.SITE_A)
             
-            if site_count >= 2 and user_pos['siteB']:
+            if site_count >= 2 and user_pos.get('siteB'):
                 b_w, b_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
                 b_x = user_pos['siteB'][0] - b_w // 2
                 b_y = user_pos['siteB'][1] - b_h // 2
                 cls.create_room(m, rooms, "B_SITE", b_x, b_y, b_w, b_h, Tile.SITE_B)
             
-            if site_count >= 3 and user_pos['siteC']:
+            if site_count >= 3 and user_pos.get('siteC'):
                 c_w, c_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
                 c_x = user_pos['siteC'][0] - c_w // 2
                 c_y = user_pos['siteC'][1] - c_h // 2
@@ -370,6 +412,54 @@ class ProceduralV2Template(MapTemplate):
                 lobby_x = user_pos['lobbyB'][0] - lobby_w // 2
                 lobby_y = user_pos['lobbyB'][1] - lobby_h // 2
                 cls.create_room(m, rooms, "B_LOBBY", lobby_x, lobby_y, lobby_w, lobby_h, None)
+            
+            # MAIN 통로
+            main_w, main_h = np.random.randint(room_min, room_max), np.random.randint(room_min - 2, room_max - 2)
+            if user_pos.get('mainA'):
+                main_x = user_pos['mainA'][0] - main_w // 2
+                main_y = user_pos['mainA'][1] - main_h // 2
+                cls.create_room(m, rooms, "A_MAIN", main_x, main_y, main_w, main_h, None)
+            
+            if site_count >= 2 and user_pos.get('mainB'):
+                main_x = user_pos['mainB'][0] - main_w // 2
+                main_y = user_pos['mainB'][1] - main_h // 2
+                cls.create_room(m, rooms, "B_MAIN", main_x, main_y, main_w, main_h, None)
+            
+            # CHOKE 포인트
+            choke_w, choke_h = np.random.randint(8, 14), np.random.randint(8, 14)
+            if user_pos.get('chokeA'):
+                choke_x = user_pos['chokeA'][0] - choke_w // 2
+                choke_y = user_pos['chokeA'][1] - choke_h // 2
+                cls.create_room(m, rooms, "A_CHOKE", choke_x, choke_y, choke_w, choke_h, None)
+            
+            if site_count >= 2 and user_pos.get('chokeB'):
+                choke_x = user_pos['chokeB'][0] - choke_w // 2
+                choke_y = user_pos['chokeB'][1] - choke_h // 2
+                cls.create_room(m, rooms, "B_CHOKE", choke_x, choke_y, choke_w, choke_h, None)
+            
+            # HEAVEN (고지대)
+            heaven_w, heaven_h = np.random.randint(10, 16), np.random.randint(8, 12)
+            if user_pos.get('heavenA'):
+                heaven_x = user_pos['heavenA'][0] - heaven_w // 2
+                heaven_y = user_pos['heavenA'][1] - heaven_h // 2
+                cls.create_room(m, rooms, "A_HEAVEN", heaven_x, heaven_y, heaven_w, heaven_h, None)
+            
+            if site_count >= 2 and user_pos.get('heavenB'):
+                heaven_x = user_pos['heavenB'][0] - heaven_w // 2
+                heaven_y = user_pos['heavenB'][1] - heaven_h // 2
+                cls.create_room(m, rooms, "B_HEAVEN", heaven_x, heaven_y, heaven_w, heaven_h, None)
+            
+            # MID 관련 (MID TOP, MID ENTRANCE)
+            mid_sub_w, mid_sub_h = np.random.randint(room_min - 2, room_max - 2), np.random.randint(room_min - 4, room_max - 4)
+            if user_pos.get('midTop'):
+                mid_sub_x = user_pos['midTop'][0] - mid_sub_w // 2
+                mid_sub_y = user_pos['midTop'][1] - mid_sub_h // 2
+                cls.create_room(m, rooms, "MID_TOP", mid_sub_x, mid_sub_y, mid_sub_w, mid_sub_h, None)
+            
+            if user_pos.get('midEntrance'):
+                mid_sub_x = user_pos['midEntrance'][0] - mid_sub_w // 2
+                mid_sub_y = user_pos['midEntrance'][1] - mid_sub_h // 2
+                cls.create_room(m, rooms, "MID_ENTRANCE", mid_sub_x, mid_sub_y, mid_sub_w, mid_sub_h, None)
             
             return
         
@@ -436,7 +526,7 @@ class ProceduralV2Template(MapTemplate):
     
     @classmethod
     def _design_chokepoints(cls, m, rooms, s, layout):
-        """초크포인트 설계 (진입로)"""
+        """초크포인트 설계 (진입로) - 이미 user_layout에서 생성된 방은 건너뜀"""
         r = cls._active_rules  # 오버라이드된 규칙 사용
         site_count = getattr(cls, '_site_count', 2)
         
@@ -448,96 +538,106 @@ class ProceduralV2Template(MapTemplate):
         # A 사이트 관련 방들 (항상 존재)
         if a_site:
             # A 사이트 초크포인트
-            a_choke_w = np.random.randint(*r['choke_width'])
-            a_choke_h = np.random.randint(10, 18)
-            a_choke_x = a_site['x'] + a_site['w']//2 - a_choke_w//2
-            a_choke_y = a_site['y'] + a_site['h'] + np.random.randint(8, 18)
-            cls.create_room(m, rooms, "A_CHOKE", a_choke_x, a_choke_y, a_choke_w + 8, a_choke_h, None)
+            if 'A_CHOKE' not in rooms:
+                a_choke_w = np.random.randint(*r['choke_width'])
+                a_choke_h = np.random.randint(10, 18)
+                a_choke_x = a_site['x'] + a_site['w']//2 - a_choke_w//2
+                a_choke_y = a_site['y'] + a_site['h'] + np.random.randint(8, 18)
+                cls.create_room(m, rooms, "A_CHOKE", a_choke_x, a_choke_y, a_choke_w + 8, a_choke_h, None)
             
             # A Main (room_size 사용)
-            a_main_w = np.random.randint(*r['room_size'])
-            a_main_h = np.random.randint(*r['room_size'])
-            a_main_x = a_site['x'] + np.random.randint(-5, 10)
-            a_main_y = s//2 + np.random.randint(-5, 15)
-            cls.create_room(m, rooms, "A_MAIN", a_main_x, a_main_y, a_main_w, a_main_h, None)
+            if 'A_MAIN' not in rooms:
+                a_main_w = np.random.randint(*r['room_size'])
+                a_main_h = np.random.randint(*r['room_size'])
+                a_main_x = a_site['x'] + np.random.randint(-5, 10)
+                a_main_y = s//2 + np.random.randint(-5, 15)
+                cls.create_room(m, rooms, "A_MAIN", a_main_x, a_main_y, a_main_w, a_main_h, None)
             
             # A Lobby (room_size 사용)
-            a_lobby_w = np.random.randint(*r['room_size'])
-            a_lobby_h = np.random.randint(*r['room_size'])
-            a_lobby_x = (a_site['x'] + atk['x'])//2 - a_lobby_w//2 + np.random.randint(-8, 9)
-            a_lobby_y = s - 52 + np.random.randint(-5, 10)
-            a_lobby_x = np.clip(a_lobby_x, 5, s - a_lobby_w - 5)
-            cls.create_room(m, rooms, "A_LOBBY", a_lobby_x, a_lobby_y, a_lobby_w, a_lobby_h, None)
+            if 'A_LOBBY' not in rooms:
+                a_lobby_w = np.random.randint(*r['room_size'])
+                a_lobby_h = np.random.randint(*r['room_size'])
+                a_lobby_x = (a_site['x'] + atk['x'])//2 - a_lobby_w//2 + np.random.randint(-8, 9)
+                a_lobby_y = s - 52 + np.random.randint(-5, 10)
+                a_lobby_x = np.clip(a_lobby_x, 5, s - a_lobby_w - 5)
+                cls.create_room(m, rooms, "A_LOBBY", a_lobby_x, a_lobby_y, a_lobby_w, a_lobby_h, None)
         
         # B 사이트 관련 방들 (2개 이상일 때)
         if b_site and site_count >= 2:
-            b_choke_w = np.random.randint(*r['choke_width'])
-            b_choke_h = np.random.randint(10, 18)
-            b_choke_x = b_site['x'] + b_site['w']//2 - b_choke_w//2
-            b_choke_y = b_site['y'] + b_site['h'] + np.random.randint(8, 18)
-            cls.create_room(m, rooms, "B_CHOKE", b_choke_x, b_choke_y, b_choke_w + 8, b_choke_h, None)
+            if 'B_CHOKE' not in rooms:
+                b_choke_w = np.random.randint(*r['choke_width'])
+                b_choke_h = np.random.randint(10, 18)
+                b_choke_x = b_site['x'] + b_site['w']//2 - b_choke_w//2
+                b_choke_y = b_site['y'] + b_site['h'] + np.random.randint(8, 18)
+                cls.create_room(m, rooms, "B_CHOKE", b_choke_x, b_choke_y, b_choke_w + 8, b_choke_h, None)
             
             # B Main (room_size 사용)
-            b_main_w = np.random.randint(*r['room_size'])
-            b_main_h = np.random.randint(*r['room_size'])
-            b_main_x = b_site['x'] + np.random.randint(-5, 10)
-            b_main_y = s//2 + np.random.randint(-5, 15)
-            cls.create_room(m, rooms, "B_MAIN", b_main_x, b_main_y, b_main_w, b_main_h, None)
+            if 'B_MAIN' not in rooms:
+                b_main_w = np.random.randint(*r['room_size'])
+                b_main_h = np.random.randint(*r['room_size'])
+                b_main_x = b_site['x'] + np.random.randint(-5, 10)
+                b_main_y = s//2 + np.random.randint(-5, 15)
+                cls.create_room(m, rooms, "B_MAIN", b_main_x, b_main_y, b_main_w, b_main_h, None)
             
             # B Lobby (room_size 사용)
-            b_lobby_w = np.random.randint(*r['room_size'])
-            b_lobby_h = np.random.randint(*r['room_size'])
-            b_lobby_x = (b_site['x'] + atk['x'])//2 - b_lobby_w//2 + np.random.randint(-8, 9)
-            b_lobby_y = s - 52 + np.random.randint(-5, 10)
-            b_lobby_x = np.clip(b_lobby_x, 5, s - b_lobby_w - 5)
-            cls.create_room(m, rooms, "B_LOBBY", b_lobby_x, b_lobby_y, b_lobby_w, b_lobby_h, None)
+            if 'B_LOBBY' not in rooms:
+                b_lobby_w = np.random.randint(*r['room_size'])
+                b_lobby_h = np.random.randint(*r['room_size'])
+                b_lobby_x = (b_site['x'] + atk['x'])//2 - b_lobby_w//2 + np.random.randint(-8, 9)
+                b_lobby_y = s - 52 + np.random.randint(-5, 10)
+                b_lobby_x = np.clip(b_lobby_x, 5, s - b_lobby_w - 5)
+                cls.create_room(m, rooms, "B_LOBBY", b_lobby_x, b_lobby_y, b_lobby_w, b_lobby_h, None)
         
         # C 사이트 관련 방들 (3개일 때)
         if c_site and site_count >= 3:
-            c_choke_w = np.random.randint(*r['choke_width'])
-            c_choke_h = np.random.randint(10, 18)
-            c_choke_x = c_site['x'] + c_site['w']//2 - c_choke_w//2
-            c_choke_y = c_site['y'] + c_site['h'] + np.random.randint(8, 18)
-            cls.create_room(m, rooms, "C_CHOKE", c_choke_x, c_choke_y, c_choke_w + 8, c_choke_h, None)
+            if 'C_CHOKE' not in rooms:
+                c_choke_w = np.random.randint(*r['choke_width'])
+                c_choke_h = np.random.randint(10, 18)
+                c_choke_x = c_site['x'] + c_site['w']//2 - c_choke_w//2
+                c_choke_y = c_site['y'] + c_site['h'] + np.random.randint(8, 18)
+                cls.create_room(m, rooms, "C_CHOKE", c_choke_x, c_choke_y, c_choke_w + 8, c_choke_h, None)
             
             # C Main (room_size 사용)
-            c_main_w = np.random.randint(*r['room_size'])
-            c_main_h = np.random.randint(*r['room_size'])
-            c_main_x = c_site['x'] + np.random.randint(-5, 10)
-            c_main_y = s//2 + np.random.randint(10, 25)
-            cls.create_room(m, rooms, "C_MAIN", c_main_x, c_main_y, c_main_w, c_main_h, None)
+            if 'C_MAIN' not in rooms:
+                c_main_w = np.random.randint(*r['room_size'])
+                c_main_h = np.random.randint(*r['room_size'])
+                c_main_x = c_site['x'] + np.random.randint(-5, 10)
+                c_main_y = s//2 + np.random.randint(10, 25)
+                cls.create_room(m, rooms, "C_MAIN", c_main_x, c_main_y, c_main_w, c_main_h, None)
         
         # Mid 설계
         cls._design_mid(m, rooms, s, layout)
     
     @classmethod
     def _design_mid(cls, m, rooms, s, layout):
-        """Mid 영역 설계"""
+        """Mid 영역 설계 - 이미 user_layout에서 생성된 방은 건너뜀"""
         mid_type = layout['mid_type']
         r = cls._active_rules
         room_min, room_max = r['room_size']
         
-        # room_size 기반으로 mid 크기 결정
-        mid_w = np.random.randint(room_min, room_max)
-        mid_h = np.random.randint(room_min, room_max)
+        # MID가 이미 있으면 건너뜀 (user_layout에서 생성됨)
+        if 'MID' not in rooms:
+            mid_w = np.random.randint(room_min, room_max)
+            mid_h = np.random.randint(room_min, room_max)
+            mid_x = s//2 - mid_w//2 + np.random.randint(-8, 9)
+            mid_y = s//2 - mid_h//2 + np.random.randint(-8, 5)
+            cls.create_room(m, rooms, "MID", mid_x, mid_y, mid_w, mid_h, None)
         
-        mid_x = s//2 - mid_w//2 + np.random.randint(-8, 9)
-        mid_y = s//2 - mid_h//2 + np.random.randint(-8, 5)
-        cls.create_room(m, rooms, "MID", mid_x, mid_y, mid_w, mid_h, None)
+        # Mid Top (수비 연결) - 이미 있으면 건너뜀
+        if 'MID_TOP' not in rooms:
+            top_w = np.random.randint(room_min, room_max)
+            top_h = np.random.randint(max(8, room_min - 4), max(12, room_max - 6))
+            top_x = s//2 - top_w//2 + np.random.randint(-5, 6)
+            top_y = np.random.randint(28, 40)
+            cls.create_room(m, rooms, "MID_TOP", top_x, top_y, top_w, top_h, None)
         
-        # Mid Top (수비 연결) - room_size 기반
-        top_w = np.random.randint(room_min, room_max)
-        top_h = np.random.randint(max(8, room_min - 4), max(12, room_max - 6))
-        top_x = s//2 - top_w//2 + np.random.randint(-5, 6)
-        top_y = np.random.randint(28, 40)
-        cls.create_room(m, rooms, "MID_TOP", top_x, top_y, top_w, top_h, None)
-        
-        # Mid Entrance (공격 진입) - room_size 기반
-        ent_w = np.random.randint(room_min, room_max)
-        ent_h = np.random.randint(max(8, room_min - 4), max(12, room_max - 6))
-        ent_x = s//2 - ent_w//2 + np.random.randint(-8, 9)
-        ent_y = s - 55 + np.random.randint(-5, 10)
-        cls.create_room(m, rooms, "MID_ENTRANCE", ent_x, ent_y, ent_w, ent_h, None)
+        # Mid Entrance (공격 진입) - 이미 있으면 건너뜀
+        if 'MID_ENTRANCE' not in rooms:
+            ent_w = np.random.randint(room_min, room_max)
+            ent_h = np.random.randint(max(8, room_min - 4), max(12, room_max - 6))
+            ent_x = s//2 - ent_w//2 + np.random.randint(-8, 9)
+            ent_y = s - 55 + np.random.randint(-5, 10)
+            cls.create_room(m, rooms, "MID_ENTRANCE", ent_x, ent_y, ent_w, ent_h, None)
         
         # Split Mid인 경우 추가 경로
         if mid_type == 'split':
@@ -549,7 +649,7 @@ class ProceduralV2Template(MapTemplate):
     
     @classmethod
     def _place_sightline_rooms(cls, m, rooms, s, layout):
-        """시야선 기반 방 배치 - SIDE를 플랭크 경로로"""
+        """시야선 기반 방 배치 - SIDE를 플랭크 경로로 (이미 존재하면 건너뜀)"""
         r = cls._active_rules  # 오버라이드된 규칙 사용
         
         # 각 사이트 주변에 SIDE 배치 (MAIN과 SITE 사이, 플랭크용)
@@ -559,6 +659,12 @@ class ProceduralV2Template(MapTemplate):
             
             site = rooms[site_name]
             prefix = site_name[0]  # 'A', 'B', or 'C'
+            side_name = f"{prefix}_SIDE"
+            
+            # 이미 존재하면 건너뜀 (user_layout에서 생성됨)
+            if side_name in rooms:
+                continue
+            
             main_name = f"{prefix}_MAIN"
             choke_name = f"{prefix}_CHOKE"
             

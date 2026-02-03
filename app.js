@@ -535,6 +535,13 @@ class LevelForge {
         
         this.mouse = { x: sx, y: sy, worldX: world.x, worldY: world.y };
 
+        // 레이아웃 편집 모드
+        if (this.layoutEditMode && e.button === 0) {
+            if (this.handleLayoutMouseDown(world.x, world.y)) {
+                return;
+            }
+        }
+
         // 경로 연결 모드
         if (this.pathConnectMode && e.button === 0) {
             this.handlePathConnectClick(world.x, world.y);
@@ -669,6 +676,11 @@ class LevelForge {
         // snapped 좌표도 저장 (가이드라인용)
         this.mouse = { x: sx, y: sy, worldX: world.x, worldY: world.y, snappedX: snapped.x, snappedY: snapped.y };
         
+        // 레이아웃 편집 모드: 노드 드래그
+        if (this.layoutEditMode && this.handleLayoutMouseMove(world.x, world.y)) {
+            return;
+        }
+        
         // Corridor 도구: edge hover 감지
         if (this.currentTool === 'corridor') {
             this.corridorHoverEdge = this.findNearestEdge(world.x, world.y, 20);
@@ -800,6 +812,11 @@ class LevelForge {
         const sy = e.clientY - rect.top;
         const world = this.screenToWorld(sx, sy);
         const snapped = this.snap(world.x, world.y);
+
+        // 레이아웃 편집 모드: 드래그 종료
+        if (this.layoutEditMode && this.handleLayoutMouseUp()) {
+            return;
+        }
 
         // Reference image drag end
         if (this.refDragging) {
@@ -2076,6 +2093,11 @@ class LevelForge {
         // 거리 분석 경로 그리기 (시뮬레이션 중이 아닐 때만)
         if (!this.simRunning) {
             this.drawDistanceAnalysis(ctx);
+        }
+        
+        // 레이아웃 편집 모드: 노드 오버레이 그리기
+        if (this.layoutEditMode && this.layoutNodes) {
+            this.renderLayoutNodes(ctx);
         }
 
         ctx.restore();
@@ -9933,14 +9955,16 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
                 
                 this.render();
                 this.showToast(`${data.objects.length}개 오브젝트 생성됨 (Seed: ${data.seed})`);
-                this.updateAIStatus(`생성 완료`, 'success');
+                
+                // 레이아웃 수정 버튼 표시 (팝업 내 + 메인)
+                document.getElementById('editLayoutBtn')?.style.setProperty('display', 'block');
+                document.getElementById('editLayoutBtnMain')?.style.setProperty('display', 'block');
             } else {
                 this.showToast('생성된 오브젝트가 없습니다');
             }
         } catch (err) {
             console.error('Python API 오류:', err);
             this.showToast('Python 서버 연결 실패');
-            this.updateAIStatus('Python 서버 없음', 'error');
         }
     }
     
@@ -10654,6 +10678,1194 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         // 영역 선택 초기화
         this.aiAreaSelection = null;
         this.pendingAIArea = null;
+    }
+
+    // ========== ADVANCED EDITOR ==========
+    advancedNodes = [];
+    advSelectedNode = null;
+    advConnections = [];
+    advDragging = null;
+    advConnecting = false;
+    
+    openAdvancedEditor() {
+        document.getElementById('advancedEditorModal').style.display = 'block';
+        this.initAdvancedCanvas();
+        this.advSyncFromPreview();
+    }
+    
+    openLayoutEditor() {
+        // 새로운 오버레이 방식 레이아웃 편집
+        this.openLayoutEdit();
+    }
+    
+    closeAdvancedEditor() {
+        document.getElementById('advancedEditorModal').style.display = 'none';
+    }
+    
+    // ===== 새로운 레이아웃 편집 (메인 캔버스 사용) =====
+    openLayoutEdit() {
+        this.layoutEditMode = true;
+        
+        // UI 표시 (flex로 설정해야 내부 요소들이 정렬됨)
+        const bar = document.getElementById('layoutEditBar');
+        if (bar) bar.style.display = 'flex';
+        document.getElementById('layoutEditPanel').style.display = 'block';
+        
+        // 현재 맵에서 노드 추출
+        this.layoutNodes = [];
+        this.layoutSelectedNode = null;
+        this.layoutDragging = false;
+        
+        this.extractLayoutNodes();
+        this.updateLayoutNodeList();
+        this.render();  // 메인 캔버스에 노드 그리기
+    }
+    
+    closeLayoutEdit() {
+        document.getElementById('layoutEditBar').style.display = 'none';
+        document.getElementById('layoutEditPanel').style.display = 'none';
+        
+        this.layoutNodes = [];
+        this.layoutSelectedNode = null;
+        this.layoutEditMode = false;
+        this.render();  // 노드 없이 다시 그리기
+    }
+    
+    extractLayoutNodes() {
+        // 메인 캔버스의 polyfloor, spawn 등에서 노드 추출
+        // 원래 정규화 좌표도 함께 저장 (변화량 계산용)
+        const polyfloors = this.objects.filter(o => o.type === 'polyfloor' && o.label);
+        const spawns = this.objects.filter(o => o.type === 'spawn-off' || o.type === 'spawn-def');
+        
+        // 기존 layout 정보 가져오기 (있으면)
+        const originalLayout = this.lastGenerateOptions?.options?.layout || {};
+        
+        const colors = {
+            'SITE': '#f1c40f', 'MID': '#9b59b6', 'MAIN': '#e67e22',
+            'LOBBY': '#1abc9c', 'SIDE': '#1abc9c', 'CHOKE': '#95a5a6',
+            'SPAWN_ATK': '#e74c3c', 'SPAWN_DEF': '#3498db', 'CONNECTOR': '#7f8c8d',
+            'HEAVEN': '#8e44ad'
+        };
+        
+        const typeMap = {
+            'SPAWN_ATK': 'atk', 'ATK_SPAWN': 'atk',
+            'SPAWN_DEF': 'def', 'DEF_SPAWN': 'def',
+            'MID': 'mid', 'MID_TOP': 'midTop', 'MID_ENTRANCE': 'midEntrance',
+            'SITE_A': 'siteA', 'A_SITE': 'siteA', 'SITE': 'siteA',
+            'SITE_B': 'siteB', 'B_SITE': 'siteB',
+            'SITE_C': 'siteC', 'C_SITE': 'siteC',
+            'SIDE_A': 'sideA', 'A_SIDE': 'sideA',
+            'SIDE_B': 'sideB', 'B_SIDE': 'sideB',
+            'LOBBY_A': 'lobbyA', 'A_LOBBY': 'lobbyA',
+            'LOBBY_B': 'lobbyB', 'B_LOBBY': 'lobbyB',
+            'MAIN_A': 'mainA', 'A_MAIN': 'mainA',
+            'MAIN_B': 'mainB', 'B_MAIN': 'mainB',
+            'CHOKE_A': 'chokeA', 'A_CHOKE': 'chokeA',
+            'CHOKE_B': 'chokeB', 'B_CHOKE': 'chokeB',
+            'HEAVEN_A': 'heavenA', 'A_HEAVEN': 'heavenA',
+            'HEAVEN_B': 'heavenB', 'B_HEAVEN': 'heavenB'
+        };
+        
+        // polyfloor -> 노드 (ANGLE, CONNECTOR 등 자동생성 방은 제외)
+        const excludePatterns = ['ANGLE', 'CONNECTOR', 'COVER', 'FLANK_'];
+        polyfloors.forEach(pf => {
+            if (!pf.label || pf.label.trim() === '') return;
+            
+            // 자동 생성되는 보조 방 제외
+            const upperLabel = pf.label.toUpperCase();
+            if (excludePatterns.some(p => upperLabel.includes(p))) return;
+            
+            let cx, cy, width, height;
+            if (pf.points && pf.points.length > 0) {
+                const xs = pf.points.map(p => p.x);
+                const ys = pf.points.map(p => p.y);
+                cx = (Math.min(...xs) + Math.max(...xs)) / 2;
+                cy = (Math.min(...ys) + Math.max(...ys)) / 2;
+                width = Math.max(...xs) - Math.min(...xs);
+                height = Math.max(...ys) - Math.min(...ys);
+            } else {
+                cx = pf.x + (pf.width || 0) / 2;
+                cy = pf.y + (pf.height || 0) / 2;
+                width = pf.width || 320;
+                height = pf.height || 320;
+            }
+            
+            const label = pf.label.toUpperCase();
+            let type = 'CONNECTOR';
+            if (label.includes('SITE')) type = 'SITE';
+            else if (label.includes('MID')) type = 'MID';
+            else if (label.includes('MAIN') || label.includes('CHOKE')) type = 'MAIN';
+            else if (label.includes('LOBBY') || label.includes('ENTRANCE')) type = 'LOBBY';
+            else if (label.includes('SIDE') || label.includes('FLANK')) type = 'SIDE';
+            else if (label.includes('HEAVEN')) type = 'HEAVEN';
+            
+            const origType = label.replace(/\s+/g, '_');
+            const layoutKey = typeMap[origType] || origType.toLowerCase().replace(/_/g, '');
+            
+            // 원래 정규화 좌표 가져오기
+            const origNorm = originalLayout[layoutKey] || null;
+            
+            // 원래 정규화 좌표가 없으면 현재 월드 좌표에서 계산
+            const bounds = this.lastGenerateOptions?.bounds || { x: -2400, y: -2400, width: 4800, height: 4800 };
+            let origNormX, origNormY;
+            if (origNorm) {
+                origNormX = origNorm.x;
+                origNormY = origNorm.y;
+            } else {
+                // 현재 좌표에서 정규화 좌표 계산
+                origNormX = (cx - bounds.x) / bounds.width;
+                origNormY = (cy - bounds.y) / bounds.height;
+            }
+            
+            this.layoutNodes.push({
+                id: this.layoutNodes.length,
+                name: pf.label,
+                type: type,
+                originalType: origType,
+                layoutKey: layoutKey,
+                x: cx,  // 메인 캔버스 월드 좌표
+                y: cy,
+                origX: cx,  // 원래 위치 저장 (변화량 계산용)
+                origY: cy,
+                origNormX: origNormX,  // 정규화 좌표 (원래 layout 또는 현재 위치에서 계산)
+                origNormY: origNormY,
+                width: Math.round(width / 32),
+                height: Math.round(height / 32),
+                floorHeight: pf.floorHeight || 0,
+                color: colors[type] || '#888',
+                sourceId: pf.id
+            });
+        });
+        
+        // spawn -> 노드
+        const bounds = this.lastGenerateOptions?.bounds || { x: -2400, y: -2400, width: 4800, height: 4800 };
+        spawns.forEach(sp => {
+            const cx = sp.x + (sp.width || 0) / 2;
+            const cy = sp.y + (sp.height || 0) / 2;
+            const type = sp.type === 'spawn-off' ? 'SPAWN_ATK' : 'SPAWN_DEF';
+            const layoutKey = type === 'SPAWN_ATK' ? 'atk' : 'def';
+            const origNorm = originalLayout[layoutKey] || null;
+            
+            // 원래 정규화 좌표가 없으면 현재 좌표에서 계산
+            let origNormX, origNormY;
+            if (origNorm) {
+                origNormX = origNorm.x;
+                origNormY = origNorm.y;
+            } else {
+                origNormX = (cx - bounds.x) / bounds.width;
+                origNormY = (cy - bounds.y) / bounds.height;
+            }
+            
+            this.layoutNodes.push({
+                id: this.layoutNodes.length,
+                name: type === 'SPAWN_ATK' ? 'ATK SPAWN' : 'DEF SPAWN',
+                type: type,
+                originalType: type,
+                layoutKey: layoutKey,
+                x: cx,
+                y: cy,
+                origX: cx,
+                origY: cy,
+                origNormX: origNormX,
+                origNormY: origNormY,
+                width: Math.round((sp.width || 320) / 32),
+                height: Math.round((sp.height || 320) / 32),
+                floorHeight: sp.floorHeight || 0,
+                color: colors[type],
+                sourceId: sp.id
+            });
+        });
+        
+        document.getElementById('layoutNodeCount').textContent = this.layoutNodes.length;
+    }
+    
+    // 메인 캔버스에서 레이아웃 노드 그리기
+    renderLayoutNodes(ctx) {
+        const METER = 32;
+        
+        this.layoutNodes.forEach(node => {
+            const w = node.width * METER;
+            const h = node.height * METER;
+            const x = node.x - w / 2;
+            const y = node.y - h / 2;
+            
+            // 노드 배경 (반투명)
+            ctx.fillStyle = node === this.layoutSelectedNode ? 
+                node.color : this.hexToRgba(node.color, 0.7);
+            ctx.fillRect(x, y, w, h);
+            
+            // 선택된 노드 테두리
+            if (node === this.layoutSelectedNode) {
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 4 / this.camera.zoom;
+                ctx.strokeRect(x, y, w, h);
+            }
+            
+            // 레이블
+            ctx.fillStyle = '#fff';
+            ctx.font = `bold ${14 / this.camera.zoom}px sans-serif`;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(node.name, node.x, node.y);
+            
+            // 크기 표시
+            ctx.font = `${11 / this.camera.zoom}px sans-serif`;
+            ctx.fillStyle = 'rgba(255,255,255,0.8)';
+            ctx.fillText(`${node.width}x${node.height}m`, node.x, node.y + 18 / this.camera.zoom);
+        });
+    }
+    
+    getLayoutNodeAt(worldX, worldY) {
+        const METER = 32;
+        for (let i = this.layoutNodes.length - 1; i >= 0; i--) {
+            const node = this.layoutNodes[i];
+            const hw = (node.width * METER) / 2;
+            const hh = (node.height * METER) / 2;
+            
+            if (worldX >= node.x - hw && worldX <= node.x + hw &&
+                worldY >= node.y - hh && worldY <= node.y + hh) {
+                return node;
+            }
+        }
+        return null;
+    }
+    
+    hexToRgba(hex, alpha) {
+        const r = parseInt(hex.slice(1, 3), 16);
+        const g = parseInt(hex.slice(3, 5), 16);
+        const b = parseInt(hex.slice(5, 7), 16);
+        return `rgba(${r}, ${g}, ${b}, ${alpha})`;
+    }
+    
+    // 레이아웃 편집 모드에서 마우스 이벤트 처리
+    handleLayoutMouseDown(worldX, worldY) {
+        const clickedNode = this.getLayoutNodeAt(worldX, worldY);
+        
+        if (clickedNode) {
+            this.layoutSelectedNode = clickedNode;
+            this.layoutDragging = true;
+            this.layoutDragOffset = {
+                x: worldX - clickedNode.x,
+                y: worldY - clickedNode.y
+            };
+            this.updateLayoutPanel();
+            this.render();
+            return true;  // 이벤트 처리됨
+        } else {
+            this.layoutSelectedNode = null;
+            this.updateLayoutPanel();
+            this.render();
+        }
+        return false;
+    }
+    
+    handleLayoutMouseMove(worldX, worldY) {
+        if (this.layoutDragging && this.layoutSelectedNode) {
+            this.layoutSelectedNode.x = worldX - this.layoutDragOffset.x;
+            this.layoutSelectedNode.y = worldY - this.layoutDragOffset.y;
+            this.render();
+            return true;
+        }
+        return false;
+    }
+    
+    handleLayoutMouseUp() {
+        if (this.layoutDragging) {
+            this.layoutDragging = false;
+            return true;
+        }
+        return false;
+    }
+    
+    updateLayoutPanel() {
+        const infoDiv = document.getElementById('layoutNodeInfo');
+        const noSelDiv = document.getElementById('layoutNoSelection');
+        
+        if (this.layoutSelectedNode) {
+            infoDiv.style.display = 'block';
+            noSelDiv.style.display = 'none';
+            
+            document.getElementById('layoutNodeName').value = this.layoutSelectedNode.name;
+            document.getElementById('layoutNodeWidth').value = this.layoutSelectedNode.width;
+            document.getElementById('layoutNodeHeight').value = this.layoutSelectedNode.height;
+            document.getElementById('layoutNodeFloorHeight').value = this.layoutSelectedNode.floorHeight;
+        } else {
+            infoDiv.style.display = 'none';
+            noSelDiv.style.display = 'block';
+        }
+        
+        this.updateLayoutNodeList();
+    }
+    
+    updateLayoutNode() {
+        if (!this.layoutSelectedNode) return;
+        
+        this.layoutSelectedNode.width = parseInt(document.getElementById('layoutNodeWidth').value) || 20;
+        this.layoutSelectedNode.height = parseInt(document.getElementById('layoutNodeHeight').value) || 20;
+        this.layoutSelectedNode.floorHeight = parseFloat(document.getElementById('layoutNodeFloorHeight').value) || 0;
+        
+        this.renderLayoutOverlay();
+    }
+    
+    deleteLayoutNode() {
+        if (!this.layoutSelectedNode) return;
+        
+        const idx = this.layoutNodes.indexOf(this.layoutSelectedNode);
+        if (idx > -1) {
+            this.layoutNodes.splice(idx, 1);
+            this.layoutSelectedNode = null;
+            this.updateLayoutPanel();
+            this.renderLayoutOverlay();
+            document.getElementById('layoutNodeCount').textContent = this.layoutNodes.length;
+        }
+    }
+    
+    updateLayoutNodeList() {
+        const listDiv = document.getElementById('layoutNodeList');
+        listDiv.innerHTML = this.layoutNodes.map((node, i) => `
+            <div onclick="app.selectLayoutNode(${i})" style="padding:6px 8px; margin-bottom:4px; background:${node === this.layoutSelectedNode ? '#2a3a4a' : '#1a1a2a'}; border-radius:4px; cursor:pointer; display:flex; justify-content:space-between; align-items:center;">
+                <span style="color:${node.color};">●</span>
+                <span style="flex:1; margin-left:6px; color:#ccc;">${node.name}</span>
+                <span style="color:#666;">${node.width}x${node.height}</span>
+            </div>
+        `).join('');
+    }
+    
+    selectLayoutNode(index) {
+        this.layoutSelectedNode = this.layoutNodes[index];
+        this.updateLayoutPanel();
+        this.renderLayoutOverlay();
+    }
+    
+    async applyLayoutEdit() {
+        // 노드 이동량을 계산하여 원래 정규화 좌표에 적용
+        const layout = {};
+        const bounds = this.lastGenerateOptions?.bounds || { x: -2400, y: -2400, width: 4800, height: 4800 };
+        const mapW = bounds.width;
+        const mapH = bounds.height;
+        
+        // 이동된 노드만 새 좌표 적용, 나머지는 원래 좌표 유지
+        const originalLayout = this.lastGenerateOptions?.options?.layout || {};
+        
+        this.layoutNodes.forEach(node => {
+            const key = node.layoutKey;
+            if (!key) return;
+            
+            // 이동량 계산 (픽셀 -> 정규화 비율)
+            const deltaX = (node.x - node.origX) / mapW;
+            const deltaY = (node.y - node.origY) / mapH;
+            
+            // 원래 정규화 좌표가 있으면 그것에 변화량 적용
+            let normX, normY;
+            if (node.origNormX !== undefined && node.origNormY !== undefined) {
+                normX = node.origNormX + deltaX;
+                normY = node.origNormY + deltaY;
+            } else if (originalLayout[key]) {
+                normX = originalLayout[key].x + deltaX;
+                normY = originalLayout[key].y + deltaY;
+            } else {
+                // fallback
+                normX = 0.5 + deltaX;
+                normY = 0.5 + deltaY;
+            }
+            
+            // 0.05 ~ 0.95 범위로 클램프
+            normX = Math.max(0.05, Math.min(0.95, normX));
+            normY = Math.max(0.05, Math.min(0.95, normY));
+            
+            layout[key] = {
+                x: normX,
+                y: normY,
+                width: node.width,
+                height: node.height,
+                floorHeight: node.floorHeight
+            };
+        });
+        
+        // 원래 layout에 있었지만 현재 노드에 없는 것들도 유지
+        Object.keys(originalLayout).forEach(key => {
+            if (!layout[key]) {
+                layout[key] = originalLayout[key];
+            }
+        });
+        
+        // site_count 계산
+        const siteTypes = ['SITE_A', 'SITE_B', 'SITE_C', 'SITE', 'A_SITE', 'B_SITE', 'C_SITE'];
+        const siteCount = this.layoutNodes.filter(n => siteTypes.includes(n.originalType || n.type)).length || 1;
+        
+        console.log('[applyLayoutEdit] === Layout Debug ===');
+        console.log('[applyLayoutEdit] Total nodes:', this.layoutNodes.length);
+        this.layoutNodes.forEach(n => {
+            console.log(`  Node: "${n.name}" -> layoutKey: "${n.layoutKey}" | origNorm: (${n.origNormX?.toFixed(3)}, ${n.origNormY?.toFixed(3)}) | moved: (${(n.x - n.origX).toFixed(1)}, ${(n.y - n.origY).toFixed(1)})`);
+        });
+        console.log('[applyLayoutEdit] Final layout keys:', Object.keys(layout));
+        console.log('[applyLayoutEdit] Layout data:', JSON.stringify(layout, null, 2));
+        
+        // 기존 시드 및 rules 재사용
+        const lastOpts = this.lastGenerateOptions?.options || {};
+        const existingSeed = lastOpts.seed;
+        const existingRules = lastOpts.rules || {};
+        
+        // 편집 모드 닫기
+        this.closeLayoutEdit();
+        
+        // 캔버스 비우기
+        this.objects = [];
+        this.nextId = 1;
+        
+        this.showToast('레이아웃으로 맵 재생성 중...');
+        
+        const PYTHON_API = 'http://localhost:3003';
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bounds: bounds,
+                    options: {
+                        algorithm: 'v2',
+                        seed: existingSeed || Math.floor(Math.random() * 1000000),
+                        site_count: siteCount,
+                        layout: layout,
+                        rules: existingRules,
+                        walls: lastOpts.walls || { perimeter: false, gaps: false }
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.objects && data.objects.length > 0) {
+                data.objects.forEach(obj => {
+                    obj.id = this.nextId++;
+                    this.objects.push(obj);
+                });
+                
+                // lastGenerateOptions 업데이트 (새 layout 저장)
+                this.lastGenerateOptions = {
+                    bounds: bounds,
+                    options: {
+                        seed: existingSeed,
+                        rules: existingRules,
+                        algorithm: 'v2',
+                        site_count: siteCount,
+                        layout: layout,
+                        walls: lastOpts.walls || { perimeter: false, gaps: false }
+                    }
+                };
+                
+                this.showToast(`레이아웃 적용 완료! (${data.objects.length}개 오브젝트)`);
+                this.render();
+                
+                document.getElementById('editLayoutBtnMain')?.style.setProperty('display', 'block');
+            }
+        } catch (err) {
+            console.error('맵 생성 오류:', err);
+            this.showToast('맵 생성 실패', 'error');
+        }
+    }
+    
+    initAdvancedCanvas() {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        if (!canvas) return;
+        
+        // 캔버스 크기 설정
+        const rect = canvas.parentElement.getBoundingClientRect();
+        canvas.width = rect.width;
+        canvas.height = rect.height;
+        
+        // 이벤트 리스너
+        canvas.onmousedown = (e) => this.advOnMouseDown(e);
+        canvas.onmousemove = (e) => this.advOnMouseMove(e);
+        canvas.onmouseup = (e) => this.advOnMouseUp(e);
+        canvas.ondblclick = (e) => this.advOnDblClick(e);
+        
+        // 키보드 이벤트
+        document.onkeydown = (e) => {
+            if (e.key === 'Delete' && this.advSelectedNode) {
+                this.advDeleteNode();
+            }
+        };
+        
+        this.advRender();
+    }
+    
+    advSyncFromPreview() {
+        // 기존 프리뷰 데이터에서 노드 동기화
+        const siteCount = parseInt(document.querySelector('input[name="siteCount"]:checked')?.value || '2');
+        
+        this.advancedNodes = [];
+        this.advConnections = [];
+        
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const w = canvas.width;
+        const h = canvas.height;
+        const margin = 60;
+        
+        // 기본 노드 생성
+        const nodeTypes = {
+            1: ['SPAWN_ATK', 'LOBBY', 'MAIN', 'SITE', 'MID', 'CONNECTOR', 'SPAWN_DEF'],
+            2: ['SPAWN_ATK', 'LOBBY_A', 'MAIN_A', 'SITE_A', 'MID', 'SITE_B', 'MAIN_B', 'LOBBY_B', 'SPAWN_DEF'],
+            3: ['SPAWN_ATK', 'LOBBY_A', 'SITE_A', 'MID', 'SITE_B', 'SITE_C', 'LOBBY_B', 'SPAWN_DEF']
+        };
+        
+        const types = nodeTypes[siteCount] || nodeTypes[2];
+        const colors = {
+            'SPAWN_ATK': '#e74c3c', 'SPAWN_DEF': '#3498db',
+            'SITE': '#f1c40f', 'SITE_A': '#f1c40f', 'SITE_B': '#f39c12', 'SITE_C': '#e67e22',
+            'MID': '#9b59b6', 'MAIN': '#e67e22', 'MAIN_A': '#e67e22', 'MAIN_B': '#d35400',
+            'LOBBY': '#1abc9c', 'LOBBY_A': '#1abc9c', 'LOBBY_B': '#16a085',
+            'SIDE': '#1abc9c', 'CHOKE': '#95a5a6', 'CONNECTOR': '#7f8c8d'
+        };
+        
+        // 노드 배치
+        types.forEach((type, i) => {
+            const angle = (i / types.length) * Math.PI * 2 - Math.PI / 2;
+            const radius = Math.min(w, h) * 0.35;
+            const x = w / 2 + Math.cos(angle) * radius;
+            const y = h / 2 + Math.sin(angle) * radius;
+            
+            const baseType = type.replace(/_[ABC]$/, '');
+            let nodeWidth = 20, nodeHeight = 20;
+            
+            if (baseType === 'SITE') { nodeWidth = 22; nodeHeight = 22; }
+            else if (baseType === 'SPAWN_ATK' || baseType === 'SPAWN_DEF') { nodeWidth = 18; nodeHeight = 18; }
+            else if (baseType === 'MID') { nodeWidth = 20; nodeHeight = 18; }
+            else if (baseType === 'MAIN' || baseType === 'LOBBY') { nodeWidth = 16; nodeHeight = 14; }
+            else { nodeWidth = 14; nodeHeight = 12; }
+            
+            this.advancedNodes.push({
+                id: i,
+                name: type.replace(/_/g, ' '),
+                type: baseType,
+                originalType: type,  // 원본 타입 (SITE_A, SITE_B 등)
+                x: x,
+                y: y,
+                width: nodeWidth,
+                height: nodeHeight,
+                floorHeight: 0,
+                color: colors[type] || '#888'
+            });
+        });
+        
+        // 기본 연결
+        for (let i = 0; i < this.advancedNodes.length - 1; i++) {
+            this.advConnections.push({ from: i, to: i + 1 });
+        }
+        
+        this.advRender();
+    }
+    
+    advRender() {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        if (!canvas) return;
+        
+        const ctx = canvas.getContext('2d');
+        const w = canvas.width;
+        const h = canvas.height;
+        
+        // 배경
+        ctx.fillStyle = '#0a0a15';
+        ctx.fillRect(0, 0, w, h);
+        
+        // 그리드
+        ctx.strokeStyle = '#1a1a2e';
+        ctx.lineWidth = 1;
+        const gridSize = 40;
+        for (let x = 0; x < w; x += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(x, 0);
+            ctx.lineTo(x, h);
+            ctx.stroke();
+        }
+        for (let y = 0; y < h; y += gridSize) {
+            ctx.beginPath();
+            ctx.moveTo(0, y);
+            ctx.lineTo(w, y);
+            ctx.stroke();
+        }
+        
+        // 연결선
+        ctx.lineWidth = 3;
+        this.advConnections.forEach(conn => {
+            const from = this.advancedNodes[conn.from];
+            const to = this.advancedNodes[conn.to];
+            if (!from || !to) return;
+            
+            ctx.strokeStyle = '#4a5568';
+            ctx.beginPath();
+            ctx.moveTo(from.x, from.y);
+            ctx.lineTo(to.x, to.y);
+            ctx.stroke();
+            
+            // 거리 표시
+            const dist = Math.sqrt((to.x - from.x) ** 2 + (to.y - from.y) ** 2);
+            const midX = (from.x + to.x) / 2;
+            const midY = (from.y + to.y) / 2;
+            ctx.fillStyle = '#666';
+            ctx.font = '10px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.fillText(`${Math.round(dist / 4)}m`, midX, midY - 5);
+        });
+        
+        // 노드
+        this.advancedNodes.forEach((node, i) => {
+            const isSelected = this.advSelectedNode === i;
+            const size = Math.max(node.width, node.height) * 1.5;
+            
+            // 노드 배경
+            ctx.fillStyle = isSelected ? '#fff' : node.color;
+            ctx.globalAlpha = isSelected ? 0.3 : 0.2;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, size + 8, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.globalAlpha = 1;
+            
+            // 노드 원
+            ctx.fillStyle = node.color;
+            ctx.beginPath();
+            ctx.arc(node.x, node.y, size / 2 + 4, 0, Math.PI * 2);
+            ctx.fill();
+            
+            // 테두리
+            if (isSelected) {
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 3;
+                ctx.beginPath();
+                ctx.arc(node.x, node.y, size / 2 + 8, 0, Math.PI * 2);
+                ctx.stroke();
+            }
+            
+            // 이름
+            ctx.fillStyle = '#fff';
+            ctx.font = 'bold 11px sans-serif';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(node.name, node.x, node.y);
+            
+            // 크기 표시
+            ctx.fillStyle = '#888';
+            ctx.font = '9px sans-serif';
+            ctx.fillText(`${node.width}x${node.height}m`, node.x, node.y + size / 2 + 16);
+            
+            // 높이 표시
+            if (node.floorHeight !== 0) {
+                ctx.fillStyle = node.floorHeight > 0 ? '#4ecdc4' : '#e74c3c';
+                ctx.fillText(`${node.floorHeight > 0 ? '+' : ''}${node.floorHeight}m`, node.x, node.y - size / 2 - 10);
+            }
+        });
+    }
+    
+    advGetNodeAt(x, y) {
+        for (let i = this.advancedNodes.length - 1; i >= 0; i--) {
+            const node = this.advancedNodes[i];
+            const size = Math.max(node.width, node.height) * 1.5;
+            const dist = Math.sqrt((x - node.x) ** 2 + (y - node.y) ** 2);
+            if (dist < size / 2 + 10) {
+                return i;
+            }
+        }
+        return null;
+    }
+    
+    advOnMouseDown(e) {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        const nodeIdx = this.advGetNodeAt(x, y);
+        
+        if (e.shiftKey && nodeIdx !== null) {
+            // Shift+클릭: 연결 시작
+            this.advConnecting = true;
+            this.advConnectFrom = nodeIdx;
+            return;
+        }
+        
+        if (nodeIdx !== null) {
+            this.advSelectedNode = nodeIdx;
+            this.advDragging = { nodeIdx, startX: x, startY: y, origX: this.advancedNodes[nodeIdx].x, origY: this.advancedNodes[nodeIdx].y };
+            this.advUpdatePanel();
+        } else {
+            this.advSelectedNode = null;
+            this.advUpdatePanel();
+        }
+        
+        this.advRender();
+    }
+    
+    advOnMouseMove(e) {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        if (this.advDragging) {
+            const node = this.advancedNodes[this.advDragging.nodeIdx];
+            node.x = Math.max(30, Math.min(canvas.width - 30, this.advDragging.origX + (x - this.advDragging.startX)));
+            node.y = Math.max(30, Math.min(canvas.height - 30, this.advDragging.origY + (y - this.advDragging.startY)));
+            this.advRender();
+        }
+    }
+    
+    advOnMouseUp(e) {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        if (this.advConnecting) {
+            const nodeIdx = this.advGetNodeAt(x, y);
+            if (nodeIdx !== null && nodeIdx !== this.advConnectFrom) {
+                // 연결 토글
+                const existingIdx = this.advConnections.findIndex(c => 
+                    (c.from === this.advConnectFrom && c.to === nodeIdx) ||
+                    (c.from === nodeIdx && c.to === this.advConnectFrom)
+                );
+                if (existingIdx >= 0) {
+                    this.advConnections.splice(existingIdx, 1);
+                } else {
+                    this.advConnections.push({ from: this.advConnectFrom, to: nodeIdx });
+                }
+            }
+            this.advConnecting = false;
+            this.advRender();
+        }
+        
+        this.advDragging = null;
+    }
+    
+    advOnDblClick(e) {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const rect = canvas.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const y = e.clientY - rect.top;
+        
+        const nodeIdx = this.advGetNodeAt(x, y);
+        if (nodeIdx === null) {
+            // 빈 공간 더블클릭: 노드 추가
+            this.advAddNodeAt(x, y);
+        }
+    }
+    
+    advUpdatePanel() {
+        const nodePanel = document.getElementById('advNodePanel');
+        const noSelection = document.getElementById('advNoSelection');
+        
+        if (this.advSelectedNode === null) {
+            nodePanel.style.display = 'none';
+            noSelection.style.display = 'block';
+            return;
+        }
+        
+        nodePanel.style.display = 'block';
+        noSelection.style.display = 'none';
+        
+        const node = this.advancedNodes[this.advSelectedNode];
+        document.getElementById('advNodeName').value = node.name;
+        document.getElementById('advNodeType').value = node.type;
+        document.getElementById('advNodeWidth').value = node.width;
+        document.getElementById('advNodeHeight').value = node.height;
+        document.getElementById('advNodeFloorHeight').value = node.floorHeight;
+        
+        // 연결 목록
+        const connections = this.advConnections
+            .filter(c => c.from === this.advSelectedNode || c.to === this.advSelectedNode)
+            .map(c => {
+                const otherIdx = c.from === this.advSelectedNode ? c.to : c.from;
+                return this.advancedNodes[otherIdx]?.name || '?';
+            });
+        
+        document.getElementById('advNodeConnections').innerHTML = 
+            connections.length > 0 ? connections.map(n => `<span style="background:#2d2d44; padding:2px 6px; border-radius:3px; margin:2px; display:inline-block;">${n}</span>`).join('') : '(연결 없음)';
+        
+        // 입력 이벤트
+        document.getElementById('advNodeName').onchange = () => {
+            node.name = document.getElementById('advNodeName').value;
+            this.advRender();
+        };
+        document.getElementById('advNodeType').onchange = () => {
+            node.type = document.getElementById('advNodeType').value;
+            const colors = { 'SITE': '#f1c40f', 'SPAWN_ATK': '#e74c3c', 'SPAWN_DEF': '#3498db', 'MID': '#9b59b6', 'MAIN': '#e67e22', 'LOBBY': '#1abc9c', 'SIDE': '#1abc9c', 'CHOKE': '#95a5a6', 'CONNECTOR': '#7f8c8d' };
+            node.color = colors[node.type] || '#888';
+            this.advRender();
+        };
+        document.getElementById('advNodeWidth').onchange = () => {
+            node.width = parseInt(document.getElementById('advNodeWidth').value) || 20;
+            this.advRender();
+        };
+        document.getElementById('advNodeHeight').onchange = () => {
+            node.height = parseInt(document.getElementById('advNodeHeight').value) || 20;
+            this.advRender();
+        };
+        document.getElementById('advNodeFloorHeight').onchange = () => {
+            node.floorHeight = parseFloat(document.getElementById('advNodeFloorHeight').value) || 0;
+            this.advRender();
+        };
+    }
+    
+    advAddNode() {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        this.advAddNodeAt(canvas.width / 2, canvas.height / 2);
+    }
+    
+    advAddNodeAt(x, y) {
+        const newNode = {
+            id: this.advancedNodes.length,
+            name: 'NEW',
+            type: 'CONNECTOR',
+            x: x,
+            y: y,
+            width: 14,
+            height: 14,
+            floorHeight: 0,
+            color: '#7f8c8d'
+        };
+        this.advancedNodes.push(newNode);
+        this.advSelectedNode = this.advancedNodes.length - 1;
+        this.advUpdatePanel();
+        this.advRender();
+    }
+    
+    advDeleteNode() {
+        if (this.advSelectedNode === null) return;
+        
+        // 연결 제거
+        this.advConnections = this.advConnections.filter(c => 
+            c.from !== this.advSelectedNode && c.to !== this.advSelectedNode
+        );
+        
+        // 인덱스 조정
+        this.advConnections = this.advConnections.map(c => ({
+            from: c.from > this.advSelectedNode ? c.from - 1 : c.from,
+            to: c.to > this.advSelectedNode ? c.to - 1 : c.to
+        }));
+        
+        this.advancedNodes.splice(this.advSelectedNode, 1);
+        this.advSelectedNode = null;
+        this.advUpdatePanel();
+        this.advRender();
+    }
+    
+    advRandomize() {
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const w = canvas.width;
+        const h = canvas.height;
+        const margin = 60;
+        
+        this.advancedNodes.forEach(node => {
+            node.x = margin + Math.random() * (w - 2 * margin);
+            node.y = margin + Math.random() * (h - 2 * margin);
+        });
+        
+        this.advRender();
+    }
+    
+    advLoadFromCanvas() {
+        // 캔버스의 현재 맵에서 노드 불러오기
+        const polyfloors = this.objects.filter(o => o.type === 'polyfloor' && o.label);
+        const spawns = this.objects.filter(o => o.type === 'spawn-off' || o.type === 'spawn-def');
+        const objectives = this.objects.filter(o => o.type === 'objective');
+        
+        if (polyfloors.length === 0 && spawns.length === 0) {
+            this.showToast('불러올 맵이 없습니다. 먼저 맵을 생성하세요.');
+            return;
+        }
+        
+        // 전체 bounds 계산
+        const allObjs = [...polyfloors, ...spawns, ...objectives];
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        
+        allObjs.forEach(obj => {
+            if (obj.points) {
+                obj.points.forEach(p => {
+                    minX = Math.min(minX, p.x);
+                    maxX = Math.max(maxX, p.x);
+                    minY = Math.min(minY, p.y);
+                    maxY = Math.max(maxY, p.y);
+                });
+            } else {
+                minX = Math.min(minX, obj.x);
+                maxX = Math.max(maxX, obj.x + (obj.width || 0));
+                minY = Math.min(minY, obj.y);
+                maxY = Math.max(maxY, obj.y + (obj.height || 0));
+            }
+        });
+        
+        const mapW = maxX - minX;
+        const mapH = maxY - minY;
+        
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const canvasW = canvas.width;
+        const canvasH = canvas.height;
+        const margin = 60;
+        
+        // 스케일 계산
+        const scaleX = (canvasW - 2 * margin) / mapW;
+        const scaleY = (canvasH - 2 * margin) / mapH;
+        const scale = Math.min(scaleX, scaleY);
+        
+        // 노드 생성
+        this.advancedNodes = [];
+        this.advConnections = [];
+        
+        const colors = {
+            'SITE': '#f1c40f', 'MID': '#9b59b6', 'MAIN': '#e67e22',
+            'LOBBY': '#1abc9c', 'SIDE': '#1abc9c', 'CHOKE': '#95a5a6',
+            'SPAWN_ATK': '#e74c3c', 'SPAWN_DEF': '#3498db', 'CONNECTOR': '#7f8c8d'
+        };
+        
+        // polyfloor를 노드로 변환
+        polyfloors.forEach((pf, i) => {
+            if (!pf.label || pf.label.trim() === '') return;
+            
+            // 중심점 계산
+            let cx, cy;
+            if (pf.points && pf.points.length > 0) {
+                cx = pf.points.reduce((s, p) => s + p.x, 0) / pf.points.length;
+                cy = pf.points.reduce((s, p) => s + p.y, 0) / pf.points.length;
+            } else {
+                cx = pf.x + (pf.width || 0) / 2;
+                cy = pf.y + (pf.height || 0) / 2;
+            }
+            
+            // 크기 계산
+            let width = 20, height = 20;
+            if (pf.points && pf.points.length > 0) {
+                const xs = pf.points.map(p => p.x);
+                const ys = pf.points.map(p => p.y);
+                width = Math.round((Math.max(...xs) - Math.min(...xs)) / 32);
+                height = Math.round((Math.max(...ys) - Math.min(...ys)) / 32);
+            }
+            
+            // 타입 추론
+            const label = pf.label.toUpperCase();
+            let type = 'CONNECTOR';
+            let originalType = label.replace(/\s+/g, '_');
+            
+            if (label.includes('SITE')) type = 'SITE';
+            else if (label.includes('MID')) type = 'MID';
+            else if (label.includes('MAIN') || label.includes('CHOKE')) type = 'MAIN';
+            else if (label.includes('LOBBY') || label.includes('ENTRANCE')) type = 'LOBBY';
+            else if (label.includes('SIDE') || label.includes('FLANK')) type = 'SIDE';
+            
+            const nodeX = margin + (cx - minX) * scale;
+            const nodeY = margin + (cy - minY) * scale;
+            
+            this.advancedNodes.push({
+                id: this.advancedNodes.length,
+                name: pf.label,
+                type: type,
+                originalType: originalType,
+                x: nodeX,
+                y: nodeY,
+                width: width,
+                height: height,
+                floorHeight: pf.floorHeight || 0,
+                color: colors[type] || '#888',
+                sourceId: pf.id  // 원본 ID 저장
+            });
+        });
+        
+        // 스폰 추가
+        spawns.forEach(sp => {
+            const cx = sp.x + (sp.width || 0) / 2;
+            const cy = sp.y + (sp.height || 0) / 2;
+            const nodeX = margin + (cx - minX) * scale;
+            const nodeY = margin + (cy - minY) * scale;
+            const type = sp.type === 'spawn-off' ? 'SPAWN_ATK' : 'SPAWN_DEF';
+            
+            this.advancedNodes.push({
+                id: this.advancedNodes.length,
+                name: type === 'SPAWN_ATK' ? 'ATK SPAWN' : 'DEF SPAWN',
+                type: type,
+                originalType: type,
+                x: nodeX,
+                y: nodeY,
+                width: Math.round((sp.width || 320) / 32),
+                height: Math.round((sp.height || 320) / 32),
+                floorHeight: sp.floorHeight || 0,
+                color: colors[type],
+                sourceId: sp.id
+            });
+        });
+        
+        // 인접 노드 연결 (거리 기반)
+        const maxConnDist = 200;  // 픽셀 거리
+        for (let i = 0; i < this.advancedNodes.length; i++) {
+            for (let j = i + 1; j < this.advancedNodes.length; j++) {
+                const n1 = this.advancedNodes[i];
+                const n2 = this.advancedNodes[j];
+                const dist = Math.sqrt((n1.x - n2.x) ** 2 + (n1.y - n2.y) ** 2);
+                
+                if (dist < maxConnDist) {
+                    this.advConnections.push({ from: i, to: j });
+                }
+            }
+        }
+        
+        this.showToast(`${this.advancedNodes.length}개 노드를 불러왔습니다.`);
+        this.advRender();
+    }
+    
+    advReset() {
+        this.advSyncFromPreview();
+    }
+    
+    async applyAdvancedLayout() {
+        // 노드 데이터를 백엔드가 기대하는 형식으로 변환
+        const canvas = document.getElementById('advancedPreviewCanvas');
+        const w = canvas.width;
+        const h = canvas.height;
+        
+        // 백엔드가 기대하는 형식: { atk: {x, y}, def: {x, y}, siteA: {x, y}, ... }
+        const layout = {};
+        
+        this.advancedNodes.forEach(node => {
+            // originalType을 사용하여 정확한 키 생성
+            const origType = node.originalType || node.type;
+            let key;
+            
+            // originalType 기반 매핑 (다양한 label 형식 지원)
+            const typeMap = {
+                // 스폰
+                'SPAWN_ATK': 'atk', 'ATK_SPAWN': 'atk', 'ATK': 'atk',
+                'SPAWN_DEF': 'def', 'DEF_SPAWN': 'def', 'DEF': 'def',
+                // 미드 및 미드 관련
+                'MID': 'mid', 'MID_TOP': 'midTop', 'MID_ENTRANCE': 'midEntrance',
+                // 사이트 (A Site, A_SITE, SITE_A 등)
+                'SITE_A': 'siteA', 'A_SITE': 'siteA', 'SITE': 'siteA',
+                'SITE_B': 'siteB', 'B_SITE': 'siteB',
+                'SITE_C': 'siteC', 'C_SITE': 'siteC',
+                // 사이드/플랭크
+                'SIDE_A': 'sideA', 'A_SIDE': 'sideA',
+                'SIDE_B': 'sideB', 'B_SIDE': 'sideB',
+                // 로비/입구
+                'LOBBY_A': 'lobbyA', 'A_LOBBY': 'lobbyA',
+                'LOBBY_B': 'lobbyB', 'B_LOBBY': 'lobbyB',
+                // 메인 통로
+                'MAIN_A': 'mainA', 'A_MAIN': 'mainA',
+                'MAIN_B': 'mainB', 'B_MAIN': 'mainB',
+                // 초크포인트
+                'CHOKE_A': 'chokeA', 'A_CHOKE': 'chokeA',
+                'CHOKE_B': 'chokeB', 'B_CHOKE': 'chokeB',
+                // 헤븐 (고지대)
+                'HEAVEN_A': 'heavenA', 'A_HEAVEN': 'heavenA',
+                'HEAVEN_B': 'heavenB', 'B_HEAVEN': 'heavenB'
+            };
+            
+            key = typeMap[origType] || origType.toLowerCase().replace(/_/g, '');
+            
+            console.log(`[Layout] node "${node.name}" (origType: ${origType}) -> key: "${key}"`);
+            
+            layout[key] = {
+                x: node.x / w,  // 0~1 정규화
+                y: node.y / h,
+                width: node.width,
+                height: node.height,
+                floorHeight: node.floorHeight
+            };
+        });
+        
+        console.log('[Layout] final layout keys:', Object.keys(layout));
+        
+        // 맵 생성 요청
+        this.closeAdvancedEditor();
+        this.closeProceduralDialog();
+        
+        // 실제 존재하는 SITE 노드 수를 계산 (다양한 형식 지원)
+        const siteTypes = ['SITE_A', 'SITE_B', 'SITE_C', 'SITE', 'A_SITE', 'B_SITE', 'C_SITE'];
+        const actualSiteCount = this.advancedNodes.filter(n => {
+            const origType = n.originalType || n.type;
+            return siteTypes.includes(origType);
+        }).length;
+        
+        console.log('[applyAdvancedLayout] SITE nodes:', this.advancedNodes.filter(n => siteTypes.includes(n.originalType || n.type)).map(n => n.originalType || n.type));
+        console.log('[applyAdvancedLayout] actualSiteCount:', actualSiteCount);
+        
+        const siteCount = actualSiteCount > 0 ? actualSiteCount : 1;
+        const corridorWidth = parseInt(document.getElementById('advCorridorWidth')?.value || '6');
+        
+        // 기존 시드 및 rules 재사용 (있으면)
+        const lastOpts = this.lastGenerateOptions?.options || {};
+        const existingSeed = lastOpts.seed;
+        const existingRules = lastOpts.rules || {};
+        
+        console.log('[applyAdvancedLayout] lastGenerateOptions:', this.lastGenerateOptions);
+        console.log('[applyAdvancedLayout] existingSeed:', existingSeed);
+        
+        // 캔버스 비우기
+        this.objects = [];
+        this.nextId = 1;
+        
+        const bounds = this.lastGenerateOptions?.bounds || { x: -2400, y: -2400, width: 4800, height: 4800 };
+        
+        // 기존 rules를 기반으로 corridor 폭만 업데이트
+        const mergedRules = {
+            ...existingRules,
+            corridor_width_min: corridorWidth,
+            corridor_width_max: corridorWidth + 2
+        };
+        
+        this.showToast('레이아웃 적용 중... (시드 유지)');
+        
+        const PYTHON_API = 'http://localhost:3003';
+        
+        try {
+            const response = await fetch(`${PYTHON_API}/generate`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    bounds: bounds,
+                    options: {
+                        algorithm: 'v2',
+                        seed: existingSeed || Math.floor(Math.random() * 1000000),
+                        site_count: siteCount,
+                        layout: layout,
+                        rules: mergedRules,
+                        walls: lastOpts.walls || { perimeter: false, gaps: false }
+                    }
+                })
+            });
+            
+            if (!response.ok) throw new Error('API 오류');
+            
+            const data = await response.json();
+            
+            if (data.objects && data.objects.length > 0) {
+                data.objects.forEach(obj => {
+                    obj.id = this.nextId++;
+                    this.objects.push(obj);
+                });
+                
+                // lastGenerateOptions 업데이트 (시드 유지)
+                this.lastGenerateOptions = {
+                    bounds: bounds,
+                    options: {
+                        seed: existingSeed || Math.floor(Math.random() * 1000000),
+                        rules: mergedRules,
+                        algorithm: 'v2',
+                        site_count: siteCount,
+                        layout: layout,
+                        walls: lastOpts.walls || { perimeter: false, gaps: false }
+                    }
+                };
+                
+                this.showToast(`레이아웃 적용 완료! (시드: ${this.lastGenerateOptions.options.seed})`);
+                this.render();
+                
+                // 레이아웃 수정 버튼 표시 (팝업 내 + 메인)
+                document.getElementById('editLayoutBtn')?.style.setProperty('display', 'block');
+                document.getElementById('editLayoutBtnMain')?.style.setProperty('display', 'block');
+            }
+        } catch (err) {
+            console.error('맵 생성 오류:', err);
+            this.showToast('맵 생성 실패', 'error');
+        }
     }
 }
 

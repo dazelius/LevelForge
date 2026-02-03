@@ -803,6 +803,10 @@ def generate_map(bounds: dict, options: dict) -> dict:
     print(f"[DEBUG] rules received: {rules}", flush=True)
     print(f"[DEBUG] algorithm: {algorithm}, site_count: {site_count}", flush=True)
     print(f"[DEBUG] walls: perimeter={enable_perimeter_walls}, gaps={enable_gap_walls}", flush=True)
+    if layout:
+        print(f"[DEBUG] layout keys: {list(layout.keys())}", flush=True)
+        for k, v in layout.items():
+            print(f"  - {k}: x={v.get('x', '?'):.3f}, y={v.get('y', '?'):.3f}", flush=True)
     
     target_size = min(bounds.get('width', 4800), bounds.get('height', 4800))
     scale_factor = target_size / (150 * 32)
