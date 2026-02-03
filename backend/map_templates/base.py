@@ -132,13 +132,27 @@ class MapTemplate(ABC):
     @staticmethod
     def connect_rooms(map_array: np.ndarray, rooms: Dict, 
                       name1: str, name2: str, width: int = 4,
-                      max_straight: int = 15):
+                      max_straight: int = 15, waypoints: list = None):
         """
         두 방을 복도로 연결 (꺾임 포함)
         - 긴 직선은 중간에 꺾임 추가
         - max_straight: 최대 직선 길이 (기본 15타일 = 15m = 3초)
+        - waypoints: 경유점 리스트 [{'x': float, 'y': float}, ...] (타일 좌표)
         """
         if name1 not in rooms or name2 not in rooms:
+            return
+        
+        # 연결 정보 저장소 초기화
+        if '_connections' not in rooms:
+            rooms['_connections'] = {}
+        conn_key = f"{name1}-{name2}"
+        
+        # 웨이포인트가 있으면 웨이포인트 경유 연결
+        if waypoints and len(waypoints) > 0:
+            print(f"[DEBUG] Using waypoints for {name1}-{name2}: {waypoints}", flush=True)
+            MapTemplate._connect_via_waypoints(map_array, rooms, name1, name2, width, waypoints)
+            # 사용자 웨이포인트 저장
+            rooms['_connections'][conn_key] = waypoints
             return
         
         r1, r2 = rooms[name1], rooms[name2]
@@ -154,11 +168,22 @@ class MapTemplate(ABC):
         # 긴 직선 방지 (파라미터화)
         MAX_STRAIGHT = max_straight
         
+        # 꺾임점 기록용
+        bend_points = []
+        
         if dist_x > MAX_STRAIGHT and dist_y > MAX_STRAIGHT:
             # S자 연결 (2번 꺾임)
             mid_x = (cx1 + cx2) // 2 + np.random.randint(-5, 6)
             mid_y1 = cy1 + (cy2 - cy1) // 3 + np.random.randint(-3, 4)
             mid_y2 = cy1 + (cy2 - cy1) * 2 // 3 + np.random.randint(-3, 4)
+            
+            # 꺾임점 기록 (S자: 4개 꺾임점)
+            bend_points = [
+                {'x': cx1, 'y': mid_y1},
+                {'x': mid_x, 'y': mid_y1},
+                {'x': mid_x, 'y': mid_y2},
+                {'x': cx2, 'y': mid_y2}
+            ]
             
             # 1단계: cy1 → mid_y1 (수직)
             for y in range(min(cy1, mid_y1), max(cy1, mid_y1) + 1):
@@ -202,6 +227,13 @@ class MapTemplate(ABC):
             mid_y = cy1 + offset_y
             mid_y = np.clip(mid_y, half + 1, s - half - 2)
             
+            # 꺾임점 기록 (Z자: 2개 꺾임점)
+            bend_points = [
+                {'x': mid_x, 'y': cy1},
+                {'x': mid_x, 'y': mid_y},
+                {'x': cx2, 'y': mid_y}
+            ]
+            
             # cx1 → mid_x
             for x in range(min(cx1, mid_x), max(cx1, mid_x) + 1):
                 for dy in range(-half, half + 1):
@@ -237,6 +269,13 @@ class MapTemplate(ABC):
             mid_x = cx1 + offset_x
             mid_x = np.clip(mid_x, half + 1, s - half - 2)
             
+            # 꺾임점 기록 (Z자: 2개 꺾임점)
+            bend_points = [
+                {'x': cx1, 'y': mid_y},
+                {'x': mid_x, 'y': mid_y},
+                {'x': mid_x, 'y': cy2}
+            ]
+            
             # cy1 → mid_y
             for y in range(min(cy1, mid_y), max(cy1, mid_y) + 1):
                 for dx in range(-half, half + 1):
@@ -267,6 +306,9 @@ class MapTemplate(ABC):
         
         else:
             # 짧은 거리: 기존 L자 연결
+            # 꺾임점 기록 (L자: 1개 꺾임점)
+            bend_points = [{'x': cx2, 'y': cy1}]
+            
             # 수평 연결
             for x in range(min(cx1, cx2), max(cx1, cx2) + 1):
                 for dy in range(-half, half + 1):
@@ -278,6 +320,51 @@ class MapTemplate(ABC):
             for y in range(min(cy1, cy2), max(cy1, cy2) + 1):
                 for dx in range(-half, half + 1):
                     nx = cx2 + dx
+                    if 0 <= y < s and 0 <= nx < s and map_array[y, nx] == Tile.VOID:
+                        map_array[y, nx] = Tile.FLOOR
+        
+        # 꺾임점 저장 (있으면)
+        if bend_points:
+            rooms['_connections'][conn_key] = bend_points
+    
+    @staticmethod
+    def _connect_via_waypoints(map_array: np.ndarray, rooms: Dict,
+                               name1: str, name2: str, width: int, waypoints: list):
+        """웨이포인트를 경유하여 두 방 연결"""
+        r1, r2 = rooms[name1], rooms[name2]
+        s = map_array.shape[0]
+        half = width // 2
+        
+        # 시작점, 웨이포인트들, 끝점을 순서대로 연결
+        cx1, cy1 = r1['x'] + r1['w']//2, r1['y'] + r1['h']//2
+        cx2, cy2 = r2['x'] + r2['w']//2, r2['y'] + r2['h']//2
+        
+        # 경유점 리스트 (타일 좌표)
+        points = [(cx1, cy1)]
+        for wp in waypoints:
+            # 웨이포인트 좌표 (이미 타일 좌표로 변환되어 있어야 함)
+            wx = int(wp.get('x', 0))
+            wy = int(wp.get('y', 0))
+            points.append((wx, wy))
+        points.append((cx2, cy2))
+        
+        # 순차적으로 L자 연결
+        for i in range(len(points) - 1):
+            px1, py1 = points[i]
+            px2, py2 = points[i + 1]
+            
+            # L자 연결: 먼저 수평, 그 다음 수직
+            # 수평 연결
+            for x in range(min(px1, px2), max(px1, px2) + 1):
+                for dy in range(-half, half + 1):
+                    ny = py1 + dy
+                    if 0 <= ny < s and 0 <= x < s and map_array[ny, x] == Tile.VOID:
+                        map_array[ny, x] = Tile.FLOOR
+            
+            # 수직 연결
+            for y in range(min(py1, py2), max(py1, py2) + 1):
+                for dx in range(-half, half + 1):
+                    nx = px2 + dx
                     if 0 <= y < s and 0 <= nx < s and map_array[y, nx] == Tile.VOID:
                         map_array[y, nx] = Tile.FLOOR
     

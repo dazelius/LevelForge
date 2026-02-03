@@ -157,7 +157,8 @@ class ProceduralV2Template(MapTemplate):
         }
     
     @classmethod
-    def generate(cls, seed=None, rules=None, site_count=2, layout=None) -> Tuple[np.ndarray, Dict]:
+    def generate(cls, seed=None, rules=None, site_count=2, layout=None, 
+                 waypoints=None, custom_connections=None, removed_connections=None) -> Tuple[np.ndarray, Dict]:
         """
         맵 생성
         
@@ -170,6 +171,9 @@ class ProceduralV2Template(MapTemplate):
                 - def: {x, y} 수비 스폰
                 - mid: {x, y} 미드
                 - siteA/B/C: {x, y} 사이트들
+            waypoints: 연결별 경유점 {"from-to": [{x, y}, ...]}
+            custom_connections: 사용자 추가 연결 [{"from", "to"}, ...]
+            removed_connections: 사용자 제거 연결 ["from-to", ...]
         """
         if seed is not None:
             np.random.seed(seed)
@@ -187,6 +191,9 @@ class ProceduralV2Template(MapTemplate):
         cls._active_rules = active_rules
         cls._site_count = site_count
         cls._user_layout = layout  # 사용자 지정 레이아웃 저장
+        cls._waypoints = waypoints or {}  # 웨이포인트 저장
+        cls._custom_connections = custom_connections or []
+        cls._removed_connections = set(removed_connections) if removed_connections else set()
         
         # 1. 레이아웃 스켈레톤 결정 (사용자 레이아웃 우선)
         if layout:
@@ -268,6 +275,7 @@ class ProceduralV2Template(MapTemplate):
             if key in user_layout:
                 w = user_layout[key].get('width')
                 h = user_layout[key].get('height')
+                print(f"[_layout_from_user] get_size({key}): w={w}, h={h}", flush=True)
                 if w and h:
                     return (int(w), int(h))
             return None
@@ -474,6 +482,7 @@ class ProceduralV2Template(MapTemplate):
                 heaven_w, heaven_h = get_size('heavenA', (10, 16), (8, 12))
                 heaven_x = user_pos['heavenA'][0] - heaven_w // 2
                 heaven_y = user_pos['heavenA'][1] - heaven_h // 2
+                print(f"[DEBUG] A_HEAVEN from user_pos: center=({user_pos['heavenA'][0]}, {user_pos['heavenA'][1]}), size=({heaven_w}, {heaven_h}), final=({heaven_x}, {heaven_y})", flush=True)
                 cls.create_room(m, rooms, "A_HEAVEN", heaven_x, heaven_y, heaven_w, heaven_h, None)
             
             if site_count >= 2 and user_pos.get('heavenB'):
@@ -823,35 +832,86 @@ class ProceduralV2Template(MapTemplate):
         # 최대 직선 길이 (규칙에서 가져오기)
         max_straight = r.get('max_straight_corridor', 20)
         
+        # 제거된 연결 확인
+        removed = getattr(cls, '_removed_connections', set())
+        
+        # 웨이포인트 가져오기
+        waypoints_dict = getattr(cls, '_waypoints', {})
+        if waypoints_dict:
+            print(f"[DEBUG] Waypoints received: {list(waypoints_dict.keys())}", flush=True)
+            for k, v in waypoints_dict.items():
+                print(f"  - {k}: {len(v)} points", flush=True)
+        
         for r1, r2, w in essential + secondary:
+            # 제거된 연결은 건너뜀
+            conn_key = f"{r1}-{r2}"
+            conn_key_rev = f"{r2}-{r1}"
+            if conn_key in removed or conn_key_rev in removed:
+                continue
+                
             if r1 in rooms and r2 in rooms:
                 clamped_w = max(min_w, min(max_w, w))
-                cls.connect_rooms(m, rooms, r1, r2, clamped_w, max_straight=max_straight)
+                
+                # 웨이포인트 찾기 (정규화 좌표 → 타일 좌표 변환)
+                wps = waypoints_dict.get(conn_key) or waypoints_dict.get(conn_key_rev) or []
+                tile_wps = []
+                for wp in wps:
+                    # 정규화 좌표 (0~1) → 타일 좌표 (0~size)
+                    tx = int(wp.get('x', 0.5) * s)
+                    ty = int(wp.get('y', 0.5) * s)
+                    tile_wps.append({'x': tx, 'y': ty})
+                
+                if tile_wps:
+                    print(f"[DEBUG] Connecting {r1}-{r2} with {len(tile_wps)} waypoints", flush=True)
+                cls.connect_rooms(m, rooms, r1, r2, clamped_w, max_straight=max_straight, 
+                                 waypoints=tile_wps if tile_wps else None)
         
         # Side 방 연결 (플랭크 경로로 활용)
+        def connect_if_not_removed(r1, r2, w):
+            conn_key = f"{r1}-{r2}"
+            conn_key_rev = f"{r2}-{r1}"
+            if conn_key in removed or conn_key_rev in removed:
+                return
+            if r1 in rooms and r2 in rooms:
+                wps = waypoints_dict.get(conn_key) or waypoints_dict.get(conn_key_rev) or []
+                tile_wps = [{'x': int(wp.get('x', 0.5) * s), 'y': int(wp.get('y', 0.5) * s)} for wp in wps]
+                cls.connect_rooms(m, rooms, r1, r2, w, max_straight=max_straight,
+                                 waypoints=tile_wps if tile_wps else None)
+        
         for name in rooms:
             if "_SIDE" in name:
                 prefix = name[0]
                 site_name = f"{prefix}_SITE"
                 main_name = f"{prefix}_MAIN"
                 choke_name = f"{prefix}_CHOKE"
-                lobby_name = f"{prefix}_LOBBY"
                 
                 # SIDE ↔ SITE 연결
-                if site_name in rooms:
-                    cls.connect_rooms(m, rooms, name, site_name, 5, max_straight=max_straight)
+                connect_if_not_removed(name, site_name, 5)
                 
                 # SIDE ↔ MAIN 연결 (메인 플랭크)
-                if main_name in rooms:
-                    cls.connect_rooms(m, rooms, main_name, name, 5, max_straight=max_straight)
+                connect_if_not_removed(main_name, name, 5)
                 
                 # SIDE ↔ CHOKE 연결 (우회 진입)
-                if choke_name in rooms:
-                    cls.connect_rooms(m, rooms, choke_name, name, 4, max_straight=max_straight)
+                connect_if_not_removed(choke_name, name, 4)
                 
                 # MID에서 SIDE 연결 (중앙 우회)
-                if "MID" in rooms:
-                    cls.connect_rooms(m, rooms, "MID", name, 4, max_straight=max_straight)
+                connect_if_not_removed("MID", name, 4)
+        
+        # 커스텀 연결 처리
+        custom_conns = getattr(cls, '_custom_connections', [])
+        for conn in custom_conns:
+            r1 = conn.get('from', '')
+            r2 = conn.get('to', '')
+            conn_key = f"{r1}-{r2}"
+            conn_key_rev = f"{r2}-{r1}"
+            
+            # 웨이포인트 찾기
+            wps = waypoints_dict.get(conn_key) or waypoints_dict.get(conn_key_rev) or []
+            tile_wps = [{'x': int(wp.get('x', 0.5) * s), 'y': int(wp.get('y', 0.5) * s)} for wp in wps]
+            
+            if r1 in rooms and r2 in rooms:
+                cls.connect_rooms(m, rooms, r1, r2, 4, max_straight=max_straight,
+                                 waypoints=tile_wps if tile_wps else None)
     
     @classmethod
     def _add_angle_positions(cls, m, rooms, s):
@@ -895,6 +955,14 @@ class ProceduralV2Template(MapTemplate):
             
             site = rooms[site_name]
             prefix = site_name[0]
+            heaven_name = f"{prefix}_HEAVEN"
+            
+            # 이미 존재하면 건너뜀 (user_layout에서 생성된 경우)
+            if heaven_name in rooms:
+                # 기존 연결만 추가
+                cls.connect_rooms(m, rooms, heaven_name, site_name, 4)
+                cls.connect_rooms(m, rooms, heaven_name, "DEF_SPAWN", 3)
+                continue
             
             # Heaven: 사이트 위쪽 (수비 유리)
             h_w = np.random.randint(14, 20)
@@ -904,9 +972,9 @@ class ProceduralV2Template(MapTemplate):
             
             if h_y > 5:
                 if not cls._overlaps_existing(rooms, h_x, h_y, h_w, h_h):
-                    cls.create_room(m, rooms, f"{prefix}_HEAVEN", h_x, h_y, h_w, h_h, None)
-                    cls.connect_rooms(m, rooms, f"{prefix}_HEAVEN", site_name, 4)
-                    cls.connect_rooms(m, rooms, f"{prefix}_HEAVEN", "DEF_SPAWN", 3)
+                    cls.create_room(m, rooms, heaven_name, h_x, h_y, h_w, h_h, None)
+                    cls.connect_rooms(m, rooms, heaven_name, site_name, 4)
+                    cls.connect_rooms(m, rooms, heaven_name, "DEF_SPAWN", 3)
     
     @classmethod
     def _validate_and_fix(cls, m, rooms, s):
@@ -957,6 +1025,11 @@ class ProceduralV2Template(MapTemplate):
     def _overlaps_existing(cls, rooms, x, y, w, h, margin=3) -> bool:
         """기존 방과 겹치는지 확인"""
         for name, room in rooms.items():
+            # 특수 키 건너뛰기 (_connections 등)
+            if name.startswith('_'):
+                continue
+            if not isinstance(room, dict) or 'x' not in room:
+                continue
             if (x < room['x'] + room['w'] + margin and 
                 x + w + margin > room['x'] and
                 y < room['y'] + room['h'] + margin and 

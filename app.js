@@ -197,7 +197,7 @@ class LevelForge {
         this.mainCanvas.addEventListener('mouseup', e => this.onMouseUp(e));
         this.mainCanvas.addEventListener('mouseleave', e => this.onMouseUp(e));
         this.mainCanvas.addEventListener('wheel', e => this.onWheel(e), { passive: false });
-        this.mainCanvas.addEventListener('contextmenu', e => e.preventDefault());
+        this.mainCanvas.addEventListener('contextmenu', e => this.onContextMenu(e));
         this.mainCanvas.addEventListener('dblclick', e => this.onDoubleClick(e));
         
         // Keyboard
@@ -900,7 +900,31 @@ class LevelForge {
         this.render();
     }
 
+    onContextMenu(e) {
+        e.preventDefault();
+        
+        // 레이아웃 편집 모드: 우클릭으로 웨이포인트 삭제
+        if (this.layoutEditMode) {
+            const rect = this.mainCanvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const world = this.screenToWorld(sx, sy);
+            this.handleLayoutRightClick(world.x, world.y);
+        }
+    }
+
     onDoubleClick(e) {
+        // 레이아웃 편집 모드: 더블클릭으로 웨이포인트 추가
+        if (this.layoutEditMode) {
+            const rect = this.mainCanvas.getBoundingClientRect();
+            const sx = e.clientX - rect.left;
+            const sy = e.clientY - rect.top;
+            const world = this.screenToWorld(sx, sy);
+            if (this.handleLayoutDoubleClick(world.x, world.y)) {
+                return;
+            }
+        }
+        
         if (['sightline', 'path'].includes(this.currentTool) && this.pathPoints.length >= 2) {
             this.createPathObject();
         } else if (this.currentTool === 'polywall' && this.pathPoints.length >= 2) {
@@ -9953,6 +9977,20 @@ print("→ Unity에서 Assets 폴더에 드래그하세요!")
                     this.objects.push(obj);
                 });
                 
+                // 연결 정보 저장 (꺾임점)
+                if (data.connections) {
+                    this.lastGenerateOptions.connections = data.connections;
+                    console.log('[generateFromPythonApi] Connections received:', Object.keys(data.connections).length);
+                }
+                
+                // 실제 배치된 좌표 저장 (다음 편집 시 정확한 좌표 사용)
+                if (data.actualLayout) {
+                    this.lastGenerateOptions.options.layout = data.actualLayout;
+                    console.log('[generateFromPythonApi] ActualLayout saved:', JSON.stringify(data.actualLayout, null, 2));
+                } else {
+                    console.warn('[generateFromPythonApi] No actualLayout in response!');
+                }
+                
                 this.render();
                 this.showToast(`${data.objects.length}개 오브젝트 생성됨 (Seed: ${data.seed})`);
                 
@@ -10722,6 +10760,32 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         this.layoutConnectingFrom = null;  // Shift+드래그 시작 노드
         this.layoutConnectingPos = null;   // 드래그 중인 위치
         
+        // 웨이포인트 (통로 경로 제어)
+        this.layoutWaypoints = {};  // { "from-to": [{x, y, id}, ...] }
+        this.layoutSelectedWaypoint = null;  // 선택된 웨이포인트
+        this.layoutDraggingWaypoint = false;
+        this.waypointIdCounter = 0;
+        
+        // 서버에서 받은 연결 정보로 웨이포인트 초기화
+        const serverConnections = this.lastGenerateOptions?.connections || {};
+        const bounds = this.lastGenerateOptions?.bounds || { x: -2400, y: -2400, width: 4800, height: 4800 };
+        
+        for (const connKey in serverConnections) {
+            const bendPoints = serverConnections[connKey];
+            if (bendPoints && bendPoints.length > 0) {
+                // 정규화 좌표 → 월드 좌표
+                this.layoutWaypoints[connKey] = bendPoints.map(pt => ({
+                    id: this.waypointIdCounter++,
+                    x: bounds.x + pt.x * bounds.width,
+                    y: bounds.y + pt.y * bounds.height
+                }));
+            }
+        }
+        
+        if (Object.keys(this.layoutWaypoints).length > 0) {
+            console.log('[openLayoutEdit] Loaded waypoints from server:', Object.keys(this.layoutWaypoints));
+        }
+        
         this.extractLayoutNodes();
         this.updateLayoutNodeList();
         this.render();  // 메인 캔버스에 노드 그리기
@@ -10823,6 +10887,10 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
                 origNormY = (cy - bounds.y) / bounds.height;
             }
             
+            // 크기: originalLayout 우선 사용 (타일 단위), 없으면 polyfloor에서 계산
+            const nodeWidth = origNorm?.width || Math.round(width / 32);
+            const nodeHeight = origNorm?.height || Math.round(height / 32);
+            
             this.layoutNodes.push({
                 id: this.layoutNodes.length,
                 name: pf.label,
@@ -10835,8 +10903,8 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
                 origY: cy,
                 origNormX: origNormX,  // 정규화 좌표 (원래 layout 또는 현재 위치에서 계산)
                 origNormY: origNormY,
-                width: Math.round(width / 32),
-                height: Math.round(height / 32),
+                width: nodeWidth,
+                height: nodeHeight,
                 floorHeight: pf.floorHeight || 0,
                 color: colors[type] || '#888',
                 sourceId: pf.id
@@ -10922,6 +10990,42 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
             ctx.fillStyle = 'rgba(255,255,255,0.8)';
             ctx.fillText(`${node.width}x${node.height}m`, node.x, node.y + 18 / this.camera.zoom);
         });
+        
+        // 웨이포인트를 노드 위에 그리기
+        this.renderLayoutWaypointsOnTop(ctx);
+    }
+    
+    // 웨이포인트만 그리기 (노드 위 레이어)
+    renderLayoutWaypointsOnTop(ctx) {
+        if (!this.layoutActiveConnections) return;
+        
+        const wpSize = 14 / this.camera.zoom;
+        
+        this.layoutActiveConnections.forEach(conn => {
+            const waypoints = conn.waypoints || [];
+            waypoints.forEach(wp => {
+                const isSelected = this.layoutSelectedWaypoint && 
+                                  this.layoutSelectedWaypoint.id === wp.id;
+                
+                // 웨이포인트 원 (더 큰 크기, 더 눈에 띄는 색상)
+                ctx.beginPath();
+                ctx.arc(wp.x, wp.y, wpSize / 2, 0, Math.PI * 2);
+                ctx.fillStyle = isSelected ? '#fff' : 'rgba(255, 87, 34, 0.95)';  // 주황색
+                ctx.fill();
+                ctx.strokeStyle = '#fff';
+                ctx.lineWidth = 2 / this.camera.zoom;
+                ctx.stroke();
+                
+                // 선택된 웨이포인트 강조
+                if (isSelected) {
+                    ctx.beginPath();
+                    ctx.arc(wp.x, wp.y, wpSize / 2 + 4 / this.camera.zoom, 0, Math.PI * 2);
+                    ctx.strokeStyle = 'rgba(255, 87, 34, 0.8)';
+                    ctx.lineWidth = 3 / this.camera.zoom;
+                    ctx.stroke();
+                }
+            });
+        });
     }
     
     // 레이아웃 노드 간 연결선 그리기
@@ -11000,21 +11104,34 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
             ['sideB', 'siteB', 'secondary'],
         ];
         
-        // 현재 사이트 개수 파악
-        const siteTypes = ['SITE_A', 'SITE_B', 'SITE_C', 'SITE', 'A_SITE', 'B_SITE', 'C_SITE'];
-        const siteCount = this.layoutNodes.filter(n => siteTypes.includes(n.originalType || n.type)).length || 1;
+        // 서버에서 받은 연결 정보가 있으면 그것을 기반으로 연결 표시
+        const serverConnections = this.lastGenerateOptions?.connections || {};
+        const serverConnKeys = Object.keys(serverConnections);
         
         let connections;
-        if (siteCount >= 3) {
-            connections = connections3Site;
-        } else if (siteCount >= 2) {
-            connections = connections2Site;
+        if (serverConnKeys.length > 0) {
+            // 서버에서 받은 모든 연결 사용
+            connections = serverConnKeys.map(key => {
+                const parts = key.split('-');
+                return [parts[0], parts[1], 'server'];
+            });
+            console.log('[renderLayoutConnections] Using server connections:', serverConnKeys.length);
         } else {
-            connections = connections1Site;
+            // 폴백: 하드코딩된 연결 사용
+            const siteTypes = ['SITE_A', 'SITE_B', 'SITE_C', 'SITE', 'A_SITE', 'B_SITE', 'C_SITE'];
+            const siteCount = this.layoutNodes.filter(n => siteTypes.includes(n.originalType || n.type)).length || 1;
+            
+            if (siteCount >= 3) {
+                connections = connections3Site;
+            } else if (siteCount >= 2) {
+                connections = connections2Site;
+            } else {
+                connections = connections1Site;
+            }
+            
+            // SIDE 연결 추가
+            connections = connections.concat(sideConnections);
         }
-        
-        // SIDE 연결 추가
-        connections = connections.concat(sideConnections);
         
         // layoutKey로 노드 찾기
         const nodeMap = {};
@@ -11041,28 +11158,52 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
             const nodeB = nodeMap[to];
             
             if (nodeA && nodeB) {
-                // 연결 정보 저장
-                this.layoutActiveConnections.push({ from, to, type, nodeA, nodeB });
+                // 웨이포인트 가져오기
+                const waypoints = this.layoutWaypoints[connKey] || this.layoutWaypoints[connKeyReverse] || [];
                 
-                ctx.beginPath();
-                ctx.moveTo(nodeA.x, nodeA.y);
-                ctx.lineTo(nodeB.x, nodeB.y);
+                // 연결 정보 저장 (웨이포인트 포함)
+                this.layoutActiveConnections.push({ from, to, type, nodeA, nodeB, waypoints, connKey });
                 
+                // 경로 점들 (시작 → 웨이포인트들 → 끝)
+                const points = [
+                    { x: nodeA.x, y: nodeA.y },
+                    ...waypoints,
+                    { x: nodeB.x, y: nodeB.y }
+                ];
+                
+                // 연결선 스타일 설정
                 if (type === 'essential') {
                     ctx.strokeStyle = 'rgba(76, 175, 80, 0.8)';  // 초록색 (필수)
                     ctx.lineWidth = 4 / this.camera.zoom;
+                    ctx.setLineDash([]);
+                } else if (type === 'custom') {
+                    ctx.strokeStyle = 'rgba(52, 152, 219, 0.8)';  // 파란색 (커스텀)
+                    ctx.lineWidth = 3 / this.camera.zoom;
+                    ctx.setLineDash([]);
+                } else if (type === 'server') {
+                    ctx.strokeStyle = 'rgba(156, 39, 176, 0.7)';  // 보라색 (서버)
+                    ctx.lineWidth = 3 / this.camera.zoom;
                     ctx.setLineDash([]);
                 } else {
                     ctx.strokeStyle = 'rgba(255, 193, 7, 0.6)';  // 노란색 (보조)
                     ctx.lineWidth = 2 / this.camera.zoom;
                     ctx.setLineDash([8 / this.camera.zoom, 4 / this.camera.zoom]);
                 }
+                
+                // 폴리라인 그리기
+                ctx.beginPath();
+                ctx.moveTo(points[0].x, points[0].y);
+                for (let i = 1; i < points.length; i++) {
+                    ctx.lineTo(points[i].x, points[i].y);
+                }
                 ctx.stroke();
                 ctx.setLineDash([]);
                 
-                // 연결선 중간에 X 버튼 그리기
-                const midX = (nodeA.x + nodeB.x) / 2;
-                const midY = (nodeA.y + nodeB.y) / 2;
+                // 웨이포인트는 노드 위에 별도로 그림 (renderLayoutWaypointsOnTop)
+                
+                // X 버튼은 첫 번째 세그먼트 중간에 그리기
+                const midX = (points[0].x + points[1].x) / 2;
+                const midY = (points[0].y + points[1].y) / 2;
                 const btnSize = 16 / this.camera.zoom;
                 
                 ctx.fillStyle = 'rgba(231, 76, 60, 0.9)';
@@ -11156,6 +11297,105 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         this.render();
     }
     
+    // 웨이포인트 클릭 감지
+    getWaypointAt(worldX, worldY) {
+        const threshold = 15 / this.camera.zoom;
+        
+        for (const connKey in this.layoutWaypoints) {
+            const waypoints = this.layoutWaypoints[connKey];
+            for (const wp of waypoints) {
+                const dist = Math.sqrt((worldX - wp.x) ** 2 + (worldY - wp.y) ** 2);
+                if (dist < threshold) {
+                    return { waypoint: wp, connKey };
+                }
+            }
+        }
+        return null;
+    }
+    
+    // 연결선 세그먼트 클릭 감지 (웨이포인트 추가용)
+    getConnectionLineAt(worldX, worldY) {
+        if (!this.layoutActiveConnections) return null;
+        
+        const threshold = 15 / this.camera.zoom;
+        
+        for (const conn of this.layoutActiveConnections) {
+            const points = [
+                { x: conn.nodeA.x, y: conn.nodeA.y },
+                ...(conn.waypoints || []),
+                { x: conn.nodeB.x, y: conn.nodeB.y }
+            ];
+            
+            // 각 세그먼트 확인
+            for (let i = 0; i < points.length - 1; i++) {
+                const p1 = points[i];
+                const p2 = points[i + 1];
+                
+                // 점과 선분 사이 거리 계산
+                const dist = this.pointToSegmentDistance(worldX, worldY, p1.x, p1.y, p2.x, p2.y);
+                
+                if (dist < threshold) {
+                    return { conn, segmentIndex: i, x: worldX, y: worldY };
+                }
+            }
+        }
+        return null;
+    }
+    
+    // 점과 선분 사이 거리 계산
+    pointToSegmentDistance(px, py, x1, y1, x2, y2) {
+        const dx = x2 - x1;
+        const dy = y2 - y1;
+        const lengthSq = dx * dx + dy * dy;
+        
+        if (lengthSq === 0) return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2);
+        
+        let t = ((px - x1) * dx + (py - y1) * dy) / lengthSq;
+        t = Math.max(0, Math.min(1, t));
+        
+        const nearestX = x1 + t * dx;
+        const nearestY = y1 + t * dy;
+        
+        return Math.sqrt((px - nearestX) ** 2 + (py - nearestY) ** 2);
+    }
+    
+    // 웨이포인트 추가
+    addWaypoint(conn, segmentIndex, x, y) {
+        const connKey = conn.connKey || `${conn.from}-${conn.to}`;
+        
+        if (!this.layoutWaypoints[connKey]) {
+            this.layoutWaypoints[connKey] = [];
+        }
+        
+        const newWaypoint = {
+            id: this.waypointIdCounter++,
+            x: x,
+            y: y
+        };
+        
+        // 세그먼트 인덱스 위치에 삽입
+        this.layoutWaypoints[connKey].splice(segmentIndex, 0, newWaypoint);
+        this.layoutSelectedWaypoint = newWaypoint;
+        this.render();
+    }
+    
+    // 웨이포인트 삭제
+    removeWaypoint(connKey, waypointId) {
+        if (!this.layoutWaypoints[connKey]) return;
+        
+        this.layoutWaypoints[connKey] = this.layoutWaypoints[connKey].filter(wp => wp.id !== waypointId);
+        
+        if (this.layoutWaypoints[connKey].length === 0) {
+            delete this.layoutWaypoints[connKey];
+        }
+        
+        if (this.layoutSelectedWaypoint?.id === waypointId) {
+            this.layoutSelectedWaypoint = null;
+        }
+        
+        this.render();
+    }
+    
     getLayoutNodeAt(worldX, worldY) {
         const METER = 32;
         for (let i = this.layoutNodes.length - 1; i >= 0; i--) {
@@ -11180,7 +11420,17 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
     
     // 레이아웃 편집 모드에서 마우스 이벤트 처리
     handleLayoutMouseDown(worldX, worldY, shiftKey) {
-        // 1. 연결선 X 버튼 클릭 확인
+        // 1. 웨이포인트 클릭 확인
+        const wpResult = this.getWaypointAt(worldX, worldY);
+        if (wpResult) {
+            this.layoutSelectedWaypoint = wpResult.waypoint;
+            this.layoutDraggingWaypoint = true;
+            this.layoutWaypointConnKey = wpResult.connKey;
+            this.render();
+            return true;
+        }
+        
+        // 2. 연결선 X 버튼 클릭 확인
         const clickedConn = this.getConnectionAt(worldX, worldY);
         if (clickedConn) {
             this.removeLayoutConnection(clickedConn);
@@ -11191,8 +11441,9 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         
         if (clickedNode) {
             this.layoutSelectedNode = clickedNode;
+            this.layoutSelectedWaypoint = null;
             
-            // 2. Shift+클릭 → 연결 생성 모드
+            // 3. Shift+클릭 → 연결 생성 모드
             if (shiftKey) {
                 this.layoutConnectingFrom = clickedNode;
                 this.layoutConnectingPos = { x: worldX, y: worldY };
@@ -11200,7 +11451,7 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
                 return true;
             }
             
-            // 3. 일반 클릭 → 노드 드래그
+            // 4. 일반 클릭 → 노드 드래그
             this.layoutDragging = true;
             this.layoutDragOffset = {
                 x: worldX - clickedNode.x,
@@ -11211,13 +11462,43 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
             return true;
         } else {
             this.layoutSelectedNode = null;
+            this.layoutSelectedWaypoint = null;
             this.updateLayoutPanel();
             this.render();
         }
         return false;
     }
     
+    // 더블클릭으로 웨이포인트 추가
+    handleLayoutDoubleClick(worldX, worldY) {
+        // 연결선 위 더블클릭 → 웨이포인트 추가
+        const lineResult = this.getConnectionLineAt(worldX, worldY);
+        if (lineResult) {
+            this.addWaypoint(lineResult.conn, lineResult.segmentIndex, worldX, worldY);
+            return true;
+        }
+        return false;
+    }
+    
+    // 우클릭으로 웨이포인트 삭제
+    handleLayoutRightClick(worldX, worldY) {
+        const wpResult = this.getWaypointAt(worldX, worldY);
+        if (wpResult) {
+            this.removeWaypoint(wpResult.connKey, wpResult.waypoint.id);
+            return true;
+        }
+        return false;
+    }
+    
     handleLayoutMouseMove(worldX, worldY) {
+        // 웨이포인트 드래그 중
+        if (this.layoutDraggingWaypoint && this.layoutSelectedWaypoint) {
+            this.layoutSelectedWaypoint.x = worldX;
+            this.layoutSelectedWaypoint.y = worldY;
+            this.render();
+            return true;
+        }
+        
         // 연결 생성 드래그 중
         if (this.layoutConnectingFrom) {
             this.layoutConnectingPos = { x: worldX, y: worldY };
@@ -11236,6 +11517,12 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
     }
     
     handleLayoutMouseUp(worldX, worldY) {
+        // 웨이포인트 드래그 완료
+        if (this.layoutDraggingWaypoint) {
+            this.layoutDraggingWaypoint = false;
+            return true;
+        }
+        
         // 연결 생성 완료
         if (this.layoutConnectingFrom) {
             const targetNode = this.getLayoutNodeAt(worldX, worldY);
@@ -11316,11 +11603,73 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
     }
     
     async applyLayoutEdit() {
-        // 노드 이동량을 계산하여 원래 정규화 좌표에 적용
-        const layout = {};
         const bounds = this.lastGenerateOptions?.bounds || { x: -2400, y: -2400, width: 4800, height: 4800 };
         const mapW = bounds.width;
         const mapH = bounds.height;
+        const threshold = 5;
+        
+        // 변경사항 확인
+        let hasNodeMoved = false;
+        let hasWaypointChanged = false;  // 초기값 false
+        let hasConnectionChanged = this.layoutRemovedConnections.size > 0 || this.layoutCustomConnections.length > 0;
+        
+        // 노드 이동 확인
+        this.layoutNodes.forEach(node => {
+            const deltaPixelX = node.x - node.origX;
+            const deltaPixelY = node.y - node.origY;
+            if (Math.abs(deltaPixelX) >= threshold || Math.abs(deltaPixelY) >= threshold) {
+                hasNodeMoved = true;
+            }
+        });
+        
+        // 웨이포인트 변경 확인: 서버에서 받은 것과 비교
+        const serverConnections = this.lastGenerateOptions?.connections || {};
+        const serverWpKeys = Object.keys(serverConnections);
+        const currentWpKeys = Object.keys(this.layoutWaypoints);
+        
+        // 키 개수가 다르면 변경됨
+        if (serverWpKeys.length !== currentWpKeys.length) {
+            hasWaypointChanged = true;
+        } else {
+            // 각 연결의 웨이포인트 비교
+            for (const key of currentWpKeys) {
+                if (hasWaypointChanged) break;
+                
+                const serverWps = serverConnections[key] || [];
+                const currentWps = this.layoutWaypoints[key] || [];
+                
+                // 웨이포인트 개수가 다르면 변경됨
+                if (serverWps.length !== currentWps.length) {
+                    hasWaypointChanged = true;
+                    break;
+                }
+                
+                // 위치 변경 확인 (정규화 좌표로 비교)
+                for (let i = 0; i < currentWps.length; i++) {
+                    const serverNormX = serverWps[i]?.x || 0;
+                    const serverNormY = serverWps[i]?.y || 0;
+                    const currentNormX = (currentWps[i].x - bounds.x) / mapW;
+                    const currentNormY = (currentWps[i].y - bounds.y) / mapH;
+                    if (Math.abs(serverNormX - currentNormX) > 0.01 || Math.abs(serverNormY - currentNormY) > 0.01) {
+                        hasWaypointChanged = true;
+                        break;
+                    }
+                }
+            }
+        }
+        
+        const hasAnyChange = hasNodeMoved || hasWaypointChanged || hasConnectionChanged;
+        console.log('[applyLayoutEdit] Changes:', { hasNodeMoved, hasWaypointChanged, hasConnectionChanged, hasAnyChange });
+        
+        // 변경사항 없으면 바로 닫기
+        if (!hasAnyChange) {
+            this.closeLayoutEdit();
+            this.showToast('변경사항 없음');
+            return;
+        }
+        
+        // 노드 이동량을 계산하여 원래 정규화 좌표에 적용
+        const layout = {};
         
         // 이동된 노드만 새 좌표 적용, 나머지는 원래 좌표 유지
         const originalLayout = this.lastGenerateOptions?.options?.layout || {};
@@ -11329,35 +11678,48 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
             const key = node.layoutKey;
             if (!key) return;
             
-            // 이동량 계산 (픽셀 -> 정규화 비율)
-            const deltaX = (node.x - node.origX) / mapW;
-            const deltaY = (node.y - node.origY) / mapH;
+            // 이동량 계산 (픽셀)
+            const deltaPixelX = node.x - node.origX;
+            const deltaPixelY = node.y - node.origY;
             
-            // 원래 정규화 좌표가 있으면 그것에 변화량 적용
-            let normX, normY;
-            if (node.origNormX !== undefined && node.origNormY !== undefined) {
-                normX = node.origNormX + deltaX;
-                normY = node.origNormY + deltaY;
-            } else if (originalLayout[key]) {
-                normX = originalLayout[key].x + deltaX;
-                normY = originalLayout[key].y + deltaY;
+            // 이동하지 않은 경우 (5픽셀 이하) 원래 layout 그대로 유지
+            const threshold = 5;
+            const notMoved = Math.abs(deltaPixelX) < threshold && Math.abs(deltaPixelY) < threshold;
+            
+            if (notMoved && originalLayout[key]) {
+                // 원래 layout 좌표만 사용 (크기는 전송하지 않음 - 시드 기반 생성)
+                layout[key] = {
+                    x: originalLayout[key].x,
+                    y: originalLayout[key].y
+                };
             } else {
-                // fallback
-                normX = 0.5 + deltaX;
-                normY = 0.5 + deltaY;
+                // 이동한 경우: 정규화 비율로 변환
+                const deltaX = deltaPixelX / mapW;
+                const deltaY = deltaPixelY / mapH;
+                
+                let normX, normY;
+                if (node.origNormX !== undefined && node.origNormY !== undefined) {
+                    normX = node.origNormX + deltaX;
+                    normY = node.origNormY + deltaY;
+                } else if (originalLayout[key]) {
+                    normX = originalLayout[key].x + deltaX;
+                    normY = originalLayout[key].y + deltaY;
+                } else {
+                    // fallback
+                    normX = 0.5 + deltaX;
+                    normY = 0.5 + deltaY;
+                }
+                
+                // 0.05 ~ 0.95 범위로 클램프
+                normX = Math.max(0.05, Math.min(0.95, normX));
+                normY = Math.max(0.05, Math.min(0.95, normY));
+                
+                // 위치만 전송 (크기는 시드 기반으로 백엔드에서 생성)
+                layout[key] = {
+                    x: normX,
+                    y: normY
+                };
             }
-            
-            // 0.05 ~ 0.95 범위로 클램프
-            normX = Math.max(0.05, Math.min(0.95, normX));
-            normY = Math.max(0.05, Math.min(0.95, normY));
-            
-            layout[key] = {
-                x: normX,
-                y: normY,
-                width: node.width,
-                height: node.height,
-                floorHeight: node.floorHeight
-            };
         });
         
         // 원래 layout에 있었지만 현재 노드에 없는 것들도 유지
@@ -11372,12 +11734,33 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
         const siteCount = this.layoutNodes.filter(n => siteTypes.includes(n.originalType || n.type)).length || 1;
         
         console.log('[applyLayoutEdit] === Layout Debug ===');
+        console.log('[applyLayoutEdit] originalLayout:', JSON.stringify(originalLayout, null, 2));
         console.log('[applyLayoutEdit] Total nodes:', this.layoutNodes.length);
         this.layoutNodes.forEach(n => {
-            console.log(`  Node: "${n.name}" -> layoutKey: "${n.layoutKey}" | origNorm: (${n.origNormX?.toFixed(3)}, ${n.origNormY?.toFixed(3)}) | moved: (${(n.x - n.origX).toFixed(1)}, ${(n.y - n.origY).toFixed(1)})`);
+            const orig = originalLayout[n.layoutKey];
+            console.log(`  Node: "${n.name}" key="${n.layoutKey}" | node.w/h: ${n.width}/${n.height} | orig.w/h: ${orig?.width}/${orig?.height} | moved: ${Math.abs(n.x - n.origX) >= 5 || Math.abs(n.y - n.origY) >= 5}`);
         });
-        console.log('[applyLayoutEdit] Final layout keys:', Object.keys(layout));
-        console.log('[applyLayoutEdit] Layout data:', JSON.stringify(layout, null, 2));
+        console.log('[applyLayoutEdit] Final layout:', JSON.stringify(layout, null, 2));
+        
+        // 웨이포인트를 정규화 좌표로 변환
+        const waypoints = {};
+        for (const connKey in this.layoutWaypoints) {
+            const wps = this.layoutWaypoints[connKey];
+            if (wps && wps.length > 0) {
+                waypoints[connKey] = wps.map(wp => ({
+                    x: (wp.x - bounds.x) / mapW,
+                    y: (wp.y - bounds.y) / mapH
+                }));
+            }
+        }
+        console.log('[applyLayoutEdit] Waypoints:', waypoints);
+        
+        // 커스텀 연결 및 제거된 연결 정보
+        const customConnections = this.layoutCustomConnections.map(c => ({
+            from: c.from,
+            to: c.to
+        }));
+        const removedConnections = Array.from(this.layoutRemovedConnections);
         
         // 기존 시드 및 rules 재사용
         const lastOpts = this.lastGenerateOptions?.options || {};
@@ -11407,7 +11790,10 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
                         site_count: siteCount,
                         layout: layout,
                         rules: existingRules,
-                        walls: lastOpts.walls || { perimeter: false, gaps: false }
+                        walls: lastOpts.walls || { perimeter: false, gaps: false },
+                        waypoints: waypoints,
+                        customConnections: customConnections,
+                        removedConnections: removedConnections
                     }
                 })
             });
@@ -11431,9 +11817,24 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
                         algorithm: 'v2',
                         site_count: siteCount,
                         layout: layout,
-                        walls: lastOpts.walls || { perimeter: false, gaps: false }
+                        walls: lastOpts.walls || { perimeter: false, gaps: false },
+                        waypoints: waypoints,
+                        customConnections: customConnections,
+                        removedConnections: removedConnections
                     }
                 };
+                
+                // 연결 정보 저장 (꺾임점) - 다음 편집 시 복원용
+                if (data.connections) {
+                    this.lastGenerateOptions.connections = data.connections;
+                    console.log('[applyLayoutEdit] Connections saved:', Object.keys(data.connections).length);
+                }
+                
+                // 실제 배치된 좌표로 layout 업데이트 (정확한 동기화)
+                if (data.actualLayout) {
+                    this.lastGenerateOptions.options.layout = data.actualLayout;
+                    console.log('[applyLayoutEdit] ActualLayout saved:', Object.keys(data.actualLayout).length);
+                }
                 
                 this.showToast(`레이아웃 적용 완료! (${data.objects.length}개 오브젝트)`);
                 this.render();
@@ -12132,6 +12533,11 @@ ${edges.slice(0, 10).map(e => `${e.floorLabel}: (${e.p1.x},${e.p1.y})-(${e.p2.x}
                         walls: lastOpts.walls || { perimeter: false, gaps: false }
                     }
                 };
+                
+                // 연결 정보 저장 (꺾임점)
+                if (data.connections) {
+                    this.lastGenerateOptions.connections = data.connections;
+                }
                 
                 this.showToast(`레이아웃 적용 완료! (시드: ${this.lastGenerateOptions.options.seed})`);
                 this.render();

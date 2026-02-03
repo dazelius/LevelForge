@@ -795,6 +795,55 @@ def generate_map(bounds: dict, options: dict) -> dict:
     site_count = options.get('site_count', 2)  # 사이트 개수 (1, 2, 3)
     layout = options.get('layout', None)  # 프리뷰에서 설정한 노드 위치
     
+    # 웨이포인트 및 연결 편집 옵션
+    waypoints_raw = options.get('waypoints', None)  # 경유점 {"from-to": [{x, y}, ...]}
+    custom_connections_raw = options.get('customConnections', None)  # 커스텀 연결
+    removed_connections_raw = options.get('removedConnections', None)  # 제거된 연결
+    
+    # 프론트엔드 키 → 백엔드 키 매핑
+    key_map = {
+        'atk': 'ATK_SPAWN', 'def': 'DEF_SPAWN',
+        'mid': 'MID', 'midTop': 'MID_TOP', 'midEntrance': 'MID_ENTRANCE',
+        'siteA': 'A_SITE', 'siteB': 'B_SITE', 'siteC': 'C_SITE',
+        'lobbyA': 'A_LOBBY', 'lobbyB': 'B_LOBBY', 'lobbyC': 'C_LOBBY',
+        'mainA': 'A_MAIN', 'mainB': 'B_MAIN', 'mainC': 'C_MAIN',
+        'chokeA': 'A_CHOKE', 'chokeB': 'B_CHOKE', 'chokeC': 'C_CHOKE',
+        'heavenA': 'A_HEAVEN', 'heavenB': 'B_HEAVEN', 'heavenC': 'C_HEAVEN',
+        'sideA': 'A_SIDE', 'sideB': 'B_SIDE', 'sideC': 'C_SIDE',
+    }
+    
+    def convert_key(k):
+        return key_map.get(k, k.upper().replace(' ', '_'))
+    
+    def convert_conn_key(conn_str):
+        parts = conn_str.split('-')
+        if len(parts) == 2:
+            return f"{convert_key(parts[0])}-{convert_key(parts[1])}"
+        return conn_str
+    
+    # 웨이포인트 키 변환
+    waypoints = None
+    if waypoints_raw:
+        waypoints = {}
+        for k, v in waypoints_raw.items():
+            new_key = convert_conn_key(k)
+            waypoints[new_key] = v
+    
+    # 커스텀 연결 변환
+    custom_connections = None
+    if custom_connections_raw:
+        custom_connections = []
+        for conn in custom_connections_raw:
+            custom_connections.append({
+                'from': convert_key(conn.get('from', '')),
+                'to': convert_key(conn.get('to', ''))
+            })
+    
+    # 제거된 연결 변환
+    removed_connections = None
+    if removed_connections_raw:
+        removed_connections = [convert_conn_key(c) for c in removed_connections_raw]
+    
     # 벽 생성 옵션 (기본 비활성화 - UI에서 수동 생성)
     walls_options = options.get('walls', {})
     enable_perimeter_walls = walls_options.get('perimeter', False)
@@ -803,6 +852,12 @@ def generate_map(bounds: dict, options: dict) -> dict:
     print(f"[DEBUG] rules received: {rules}", flush=True)
     print(f"[DEBUG] algorithm: {algorithm}, site_count: {site_count}", flush=True)
     print(f"[DEBUG] walls: perimeter={enable_perimeter_walls}, gaps={enable_gap_walls}", flush=True)
+    if waypoints:
+        print(f"[DEBUG] waypoints: {list(waypoints.keys())}", flush=True)
+    if custom_connections:
+        print(f"[DEBUG] custom_connections: {custom_connections}", flush=True)
+    if removed_connections:
+        print(f"[DEBUG] removed_connections: {removed_connections}", flush=True)
     if layout:
         print(f"[DEBUG] layout keys: {list(layout.keys())}", flush=True)
         for k, v in layout.items():
@@ -810,6 +865,10 @@ def generate_map(bounds: dict, options: dict) -> dict:
     
     target_size = min(bounds.get('width', 4800), bounds.get('height', 4800))
     scale_factor = target_size / (150 * 32)
+    
+    # layout의 width/height는 이미 타일 단위 (프론트엔드에서 /32로 변환됨)
+    if layout:
+        print(f"[DEBUG] layout received (width/height in tiles)", flush=True)
     
     # v4 벡터 기반은 별도 처리
     if algorithm == 'v4':
@@ -837,7 +896,11 @@ def generate_map(bounds: dict, options: dict) -> dict:
     if algorithm == 'v3':
         tile_map, rooms = ProceduralV3Template.generate(seed=seed, rules=rules)
     else:
-        tile_map, rooms = ProceduralV2Template.generate(seed=seed, rules=rules, site_count=site_count, layout=layout)
+        tile_map, rooms = ProceduralV2Template.generate(
+            seed=seed, rules=rules, site_count=site_count, layout=layout,
+            waypoints=waypoints, custom_connections=custom_connections, 
+            removed_connections=removed_connections
+        )
     
     converter = TileMapConverter(tile_map, rooms, scale_factor)
     objects = converter.convert()
@@ -878,7 +941,84 @@ def generate_map(bounds: dict, options: dict) -> dict:
     
     # 절벽은 post-process로 수동 생성하도록 변경 (generate_cliff_edges 제거)
     
-    return {'objects': objects, 'bounds': bounds, 'seed': seed}
+    # 연결 정보 추출 (꺾임점을 정규화 좌표로 변환)
+    connections_data = {}
+    raw_connections = rooms.get('_connections', {})
+    map_size = tile_map.shape[0]  # 150
+    
+    # 백엔드 키 → 프론트엔드 키 매핑 (역방향)
+    reverse_key_map = {
+        'ATK_SPAWN': 'atk', 'DEF_SPAWN': 'def',
+        'MID': 'mid', 'MID_TOP': 'midTop', 'MID_ENTRANCE': 'midEntrance',
+        'A_SITE': 'siteA', 'B_SITE': 'siteB', 'C_SITE': 'siteC',
+        'A_LOBBY': 'lobbyA', 'B_LOBBY': 'lobbyB', 'C_LOBBY': 'lobbyC',
+        'A_MAIN': 'mainA', 'B_MAIN': 'mainB', 'C_MAIN': 'mainC',
+        'A_CHOKE': 'chokeA', 'B_CHOKE': 'chokeB', 'C_CHOKE': 'chokeC',
+        'A_HEAVEN': 'heavenA', 'B_HEAVEN': 'heavenB', 'C_HEAVEN': 'heavenC',
+        'A_SIDE': 'sideA', 'B_SIDE': 'sideB', 'C_SIDE': 'sideC',
+    }
+    
+    def convert_backend_key(k):
+        return reverse_key_map.get(k, k.lower().replace('_', ''))
+    
+    for conn_key, bend_points in raw_connections.items():
+        parts = conn_key.split('-')
+        if len(parts) == 2:
+            # 프론트엔드 키로 변환
+            frontend_key = f"{convert_backend_key(parts[0])}-{convert_backend_key(parts[1])}"
+            # 타일 좌표 → 정규화 좌표
+            normalized_points = []
+            for pt in bend_points:
+                normalized_points.append({
+                    'x': pt['x'] / map_size,
+                    'y': pt['y'] / map_size
+                })
+            connections_data[frontend_key] = normalized_points
+    
+    if connections_data:
+        print(f"[DEBUG] Connections data: {len(connections_data)} connections with bend points", flush=True)
+    
+    # 실제 배치된 룸 좌표를 정규화해서 반환 (프론트엔드와 동기화용)
+    actual_layout = {}
+    margin = 15  # _layout_from_user와 동일한 마진
+    usable_size = map_size - 2 * margin  # 120
+    
+    for room_name, room_data in rooms.items():
+        if room_name.startswith('_'):
+            continue
+        if not isinstance(room_data, dict) or 'x' not in room_data:
+            continue
+        
+        # 룸 중심 좌표
+        cx = room_data['x'] + room_data['w'] // 2
+        cy = room_data['y'] + room_data['h'] // 2
+        
+        # 정규화 좌표 (0~1) - 마진 고려해서 to_map_coord의 역함수
+        # to_map_coord: x = norm_x * usable_size + margin
+        # 역함수: norm_x = (x - margin) / usable_size
+        norm_x = (cx - margin) / usable_size
+        norm_y = (cy - margin) / usable_size
+        
+        # 0~1 범위로 클램프
+        norm_x = max(0.0, min(1.0, norm_x))
+        norm_y = max(0.0, min(1.0, norm_y))
+        
+        # 백엔드 키 → 프론트엔드 키
+        frontend_key = convert_backend_key(room_name)
+        
+        # width/height는 타일 단위 그대로 반환 (프론트엔드에서도 타일 단위 사용)
+        actual_layout[frontend_key] = {
+            'x': norm_x,
+            'y': norm_y,
+            'width': room_data['w'],
+            'height': room_data['h']
+        }
+    
+    print(f"[DEBUG] Actual layout: {len(actual_layout)} rooms", flush=True)
+    for k, v in actual_layout.items():
+        print(f"  - {k}: x={v['x']:.3f}, y={v['y']:.3f}, w={v['width']}, h={v['height']}", flush=True)
+    
+    return {'objects': objects, 'bounds': bounds, 'seed': seed, 'connections': connections_data, 'actualLayout': actual_layout}
 
 
 def generate_cliff_edges(covered_mask, scale_factor: float, offset_x: float, offset_y: float,
