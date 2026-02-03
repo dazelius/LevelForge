@@ -263,6 +263,15 @@ class ProceduralV2Template(MapTemplate):
                 return to_map_coord(user_layout[key]['x'], user_layout[key]['y'])
             return to_map_coord(default_x, default_y)
         
+        # 노드 크기 가져오기 (없으면 None 반환 → 랜덤 생성)
+        def get_size(key):
+            if key in user_layout:
+                w = user_layout[key].get('width')
+                h = user_layout[key].get('height')
+                if w and h:
+                    return (int(w), int(h))
+            return None
+        
         # 각 노드의 맵 좌표 (필수 노드는 기본 위치 제공)
         atk_pos = safe_coord('atk', 0.5, 0.1)      # 상단 중앙
         def_pos = safe_coord('def', 0.5, 0.9)      # 하단 중앙
@@ -307,6 +316,16 @@ class ProceduralV2Template(MapTemplate):
         else:
             a_side = 'left'  # 기본값
         
+        # 모든 노드의 크기 정보 수집
+        user_sizes = {}
+        for key in ['atk', 'def', 'mid', 'siteA', 'siteB', 'siteC', 
+                    'sideA', 'sideB', 'lobbyA', 'lobbyB',
+                    'mainA', 'mainB', 'chokeA', 'chokeB', 
+                    'heavenA', 'heavenB', 'midTop', 'midEntrance']:
+            size = get_size(key)
+            if size:
+                user_sizes[key] = size
+        
         return {
             'a_side': a_side,
             'mid_type': 'wide',  # 기본값
@@ -334,7 +353,9 @@ class ProceduralV2Template(MapTemplate):
                 'heavenB': heaven_b_pos,
                 'midTop': mid_top_pos,
                 'midEntrance': mid_entrance_pos,
-            }
+            },
+            # 사용자 지정 크기
+            'user_sizes': user_sizes
         }
     
     @classmethod
@@ -343,10 +364,19 @@ class ProceduralV2Template(MapTemplate):
         r = cls._active_rules  # 오버라이드된 규칙 사용
         site_count = getattr(cls, '_site_count', 2)
         user_pos = layout.get('user_positions', None)
+        user_sizes = layout.get('user_sizes', {})  # 사용자 지정 크기
         
-        # 크기 결정
-        atk_w, atk_h = np.random.randint(*r['spawn_size']), np.random.randint(18, 24)
-        def_w, def_h = np.random.randint(*r['spawn_size']), np.random.randint(16, 22)
+        # 사용자 크기 또는 기본 랜덤 크기 반환
+        def get_size(key, default_range, default_range2=None):
+            if key in user_sizes:
+                return user_sizes[key]
+            if default_range2:
+                return np.random.randint(*default_range), np.random.randint(*default_range2)
+            return np.random.randint(*default_range), np.random.randint(*default_range)
+        
+        # 크기 결정 (사용자 지정 크기 우선)
+        atk_w, atk_h = get_size('atk', r['spawn_size'], (18, 24))
+        def_w, def_h = get_size('def', r['spawn_size'], (16, 22))
         
         # 사용자 지정 위치가 있으면 사용
         if user_pos:
@@ -362,104 +392,108 @@ class ProceduralV2Template(MapTemplate):
             
             # 사이트들
             if user_pos['siteA']:
-                a_w, a_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
+                a_w, a_h = get_size('siteA', r['site_size'])
                 a_x = user_pos['siteA'][0] - a_w // 2
                 a_y = user_pos['siteA'][1] - a_h // 2
                 cls.create_room(m, rooms, "A_SITE", a_x, a_y, a_w, a_h, Tile.SITE_A)
             
             if site_count >= 2 and user_pos.get('siteB'):
-                b_w, b_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
+                b_w, b_h = get_size('siteB', r['site_size'])
                 b_x = user_pos['siteB'][0] - b_w // 2
                 b_y = user_pos['siteB'][1] - b_h // 2
                 cls.create_room(m, rooms, "B_SITE", b_x, b_y, b_w, b_h, Tile.SITE_B)
             
             if site_count >= 3 and user_pos.get('siteC'):
-                c_w, c_h = np.random.randint(*r['site_size']), np.random.randint(*r['site_size'])
+                c_w, c_h = get_size('siteC', r['site_size'])
                 c_x = user_pos['siteC'][0] - c_w // 2
                 c_y = user_pos['siteC'][1] - c_h // 2
                 cls.create_room(m, rooms, "C_SITE", c_x, c_y, c_w, c_h, Tile.SITE_A)  # C도 일단 SITE_A 타일
             
             # MID (room_size 파라미터 사용)
             room_min, room_max = r['room_size']
-            print(f"[DEBUG MID] room_size from rules: {r['room_size']}, min={room_min}, max={room_max}", flush=True)
-            mid_w, mid_h = np.random.randint(room_min, room_max), np.random.randint(room_min, room_max)
-            print(f"[DEBUG MID] created size: w={mid_w}, h={mid_h}", flush=True)
+            mid_w, mid_h = get_size('mid', r['room_size'])
             mid_x = user_pos['mid'][0] - mid_w // 2
             mid_y = user_pos['mid'][1] - mid_h // 2
             cls.create_room(m, rooms, "MID", mid_x, mid_y, mid_w, mid_h, None)
             
             # 랑데뷰 포인트: SIDE (플랭크) - 약간 작게
             side_min, side_max = max(8, room_min - 4), max(12, room_max - 4)
-            side_w, side_h = np.random.randint(side_min, side_max), np.random.randint(side_min, side_max)
             if user_pos.get('sideA'):
+                side_w, side_h = get_size('sideA', (side_min, side_max))
                 side_x = user_pos['sideA'][0] - side_w // 2
                 side_y = user_pos['sideA'][1] - side_h // 2
                 cls.create_room(m, rooms, "A_SIDE", side_x, side_y, side_w, side_h, None)
             
             if site_count >= 2 and user_pos.get('sideB'):
+                side_w, side_h = get_size('sideB', (side_min, side_max))
                 side_x = user_pos['sideB'][0] - side_w // 2
                 side_y = user_pos['sideB'][1] - side_h // 2
                 cls.create_room(m, rooms, "B_SIDE", side_x, side_y, side_w, side_h, None)
             
             # 랑데뷰 포인트: LOBBY (진입 대기)
-            lobby_w, lobby_h = np.random.randint(room_min, room_max), np.random.randint(room_min, room_max)
             if user_pos.get('lobbyA'):
+                lobby_w, lobby_h = get_size('lobbyA', r['room_size'])
                 lobby_x = user_pos['lobbyA'][0] - lobby_w // 2
                 lobby_y = user_pos['lobbyA'][1] - lobby_h // 2
                 cls.create_room(m, rooms, "A_LOBBY", lobby_x, lobby_y, lobby_w, lobby_h, None)
             
             if site_count >= 2 and user_pos.get('lobbyB'):
+                lobby_w, lobby_h = get_size('lobbyB', r['room_size'])
                 lobby_x = user_pos['lobbyB'][0] - lobby_w // 2
                 lobby_y = user_pos['lobbyB'][1] - lobby_h // 2
                 cls.create_room(m, rooms, "B_LOBBY", lobby_x, lobby_y, lobby_w, lobby_h, None)
             
             # MAIN 통로
-            main_w, main_h = np.random.randint(room_min, room_max), np.random.randint(room_min - 2, room_max - 2)
             if user_pos.get('mainA'):
+                main_w, main_h = get_size('mainA', r['room_size'], (room_min - 2, room_max - 2))
                 main_x = user_pos['mainA'][0] - main_w // 2
                 main_y = user_pos['mainA'][1] - main_h // 2
                 cls.create_room(m, rooms, "A_MAIN", main_x, main_y, main_w, main_h, None)
             
             if site_count >= 2 and user_pos.get('mainB'):
+                main_w, main_h = get_size('mainB', r['room_size'], (room_min - 2, room_max - 2))
                 main_x = user_pos['mainB'][0] - main_w // 2
                 main_y = user_pos['mainB'][1] - main_h // 2
                 cls.create_room(m, rooms, "B_MAIN", main_x, main_y, main_w, main_h, None)
             
             # CHOKE 포인트
-            choke_w, choke_h = np.random.randint(8, 14), np.random.randint(8, 14)
             if user_pos.get('chokeA'):
+                choke_w, choke_h = get_size('chokeA', (8, 14))
                 choke_x = user_pos['chokeA'][0] - choke_w // 2
                 choke_y = user_pos['chokeA'][1] - choke_h // 2
                 cls.create_room(m, rooms, "A_CHOKE", choke_x, choke_y, choke_w, choke_h, None)
             
             if site_count >= 2 and user_pos.get('chokeB'):
+                choke_w, choke_h = get_size('chokeB', (8, 14))
                 choke_x = user_pos['chokeB'][0] - choke_w // 2
                 choke_y = user_pos['chokeB'][1] - choke_h // 2
                 cls.create_room(m, rooms, "B_CHOKE", choke_x, choke_y, choke_w, choke_h, None)
             
             # HEAVEN (고지대)
-            heaven_w, heaven_h = np.random.randint(10, 16), np.random.randint(8, 12)
             if user_pos.get('heavenA'):
+                heaven_w, heaven_h = get_size('heavenA', (10, 16), (8, 12))
                 heaven_x = user_pos['heavenA'][0] - heaven_w // 2
                 heaven_y = user_pos['heavenA'][1] - heaven_h // 2
                 cls.create_room(m, rooms, "A_HEAVEN", heaven_x, heaven_y, heaven_w, heaven_h, None)
             
             if site_count >= 2 and user_pos.get('heavenB'):
+                heaven_w, heaven_h = get_size('heavenB', (10, 16), (8, 12))
                 heaven_x = user_pos['heavenB'][0] - heaven_w // 2
                 heaven_y = user_pos['heavenB'][1] - heaven_h // 2
                 cls.create_room(m, rooms, "B_HEAVEN", heaven_x, heaven_y, heaven_w, heaven_h, None)
             
             # MID 관련 (MID TOP, MID ENTRANCE)
-            mid_sub_w, mid_sub_h = np.random.randint(room_min - 2, room_max - 2), np.random.randint(room_min - 4, room_max - 4)
             if user_pos.get('midTop'):
-                mid_sub_x = user_pos['midTop'][0] - mid_sub_w // 2
-                mid_sub_y = user_pos['midTop'][1] - mid_sub_h // 2
-                cls.create_room(m, rooms, "MID_TOP", mid_sub_x, mid_sub_y, mid_sub_w, mid_sub_h, None)
+                mid_top_w, mid_top_h = get_size('midTop', (room_min - 2, room_max - 2), (room_min - 4, room_max - 4))
+                mid_sub_x = user_pos['midTop'][0] - mid_top_w // 2
+                mid_sub_y = user_pos['midTop'][1] - mid_top_h // 2
+                cls.create_room(m, rooms, "MID_TOP", mid_sub_x, mid_sub_y, mid_top_w, mid_top_h, None)
             
             if user_pos.get('midEntrance'):
-                mid_sub_x = user_pos['midEntrance'][0] - mid_sub_w // 2
-                mid_sub_y = user_pos['midEntrance'][1] - mid_sub_h // 2
-                cls.create_room(m, rooms, "MID_ENTRANCE", mid_sub_x, mid_sub_y, mid_sub_w, mid_sub_h, None)
+                mid_ent_w, mid_ent_h = get_size('midEntrance', (room_min - 2, room_max - 2), (room_min - 4, room_max - 4))
+                mid_sub_x = user_pos['midEntrance'][0] - mid_ent_w // 2
+                mid_sub_y = user_pos['midEntrance'][1] - mid_ent_h // 2
+                cls.create_room(m, rooms, "MID_ENTRANCE", mid_sub_x, mid_sub_y, mid_ent_w, mid_ent_h, None)
             
             return
         
